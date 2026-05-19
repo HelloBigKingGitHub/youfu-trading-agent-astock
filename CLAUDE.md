@@ -38,14 +38,20 @@
 
 ## 已知问题与注意事项
 
-### 依赖冲突
-mootdx 锁死 httpx==0.25.2，与 langchain-google-genai 的 httpx>=0.28.1 冲突。不用 Google 模型时可 `pip install mootdx --no-deps` 绕过。
+### 依赖冲突（v0.2.6 已缓解）
+mootdx 锁死 httpx==0.25.2，与 langchain-google-genai 的 httpx>=0.28.1 冲突。v0.2.6 将 google-genai 移至可选依赖 `[google]`，`pip install -e .` 不再冲突。需要 Google 模型时 `pip install -e ".[google]"`。
 
 ### akshare 已移除（v0.2.5）
-v0.2.5 起完全移除 akshare 依赖，所有数据通过直连 HTTP API 获取。彻底消除了 akshare + pandas 3.0 + pyarrow 的 `ArrowInvalid` 崩溃问题，也消除了 akshare 与 mootdx 的 httpx 版本冲突。
+v0.2.5 起完全移除 akshare 依赖，所有数据通过直连 HTTP API 获取。
+
+### 百度 PAE 资金流接口已下线
+`fundsortlist` 和 `fundflow` 两个接口返回空（2026-05-19 确认）。替代方案：东财 push2 分钟级资金流（`push2.eastmoney.com/api/qt/stock/fflow/kline/get`）。a-stock-data 侧待替换。
 
 ### 模型兼容性
 deepseek-v4-flash 等模型在 tool call 时可能返回中文股票名而非 6 位代码。`safe_ticker_component` 已加兜底自动转码，但不同模型表现仍有差异。
+
+### 待处理 PR
+- PR #18（hejingchi）：start_date 功能 + 主题切换 + Windows 字体。不建议直接 merge（与 v0.2.6 冲突），start_date 功能值得后续自行实现。
 
 ## Issue 归档
 所有 GitHub Issue 的详细记录在 `issues/` 文件夹中，包含问题描述、根因分析、修复方案和当前状态。
