@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [0.2.9] — 2026-05-30
+
+### Added
+
+- **Markdown 报告导出**：分析结果页新增「下载 Markdown」按钮。MD 导出零字体依赖、
+  跨平台永远可用，是 PDF 之外的稳妥兜底（#17 多位用户请求）。
+
+### Fixed
+
+- **PDF 中文字体跨平台崩溃（#22 / #30 / #31）**：原 `_FONT_CANDIDATES` 只列了
+  macOS/Linux 字体，Windows 用户找不到中文字体 → fpdf 回退 Helvetica → 渲染中文时
+  抛 `FPDFUnicodeEncodingException` / `Character "股" ... outside the range`。
+  现改为**按操作系统排序的字体候选**（Windows 微软雅黑/黑体/宋体、macOS 苹方、
+  Linux Noto/文泉驿）+ 递归扫描字体目录兜底。
+- **PDF 失败拖垮整个结果页**：`generate_pdf` 原先在结果页渲染时被 eager 调用，一旦
+  报错整页崩成 traceback，用户连分析结果都看不到。现改为 **try/except 包裹 + 懒生成**，
+  PDF 失败只禁用 PDF 按钮并提示改用 Markdown，分析报告照常显示。
+- **长串中文表格/段落渲染报错（#31）**：`multi_cell` 遇到无空格的长中文串抛
+  `Not enough horizontal space to render a single character`。已为内容 `multi_cell`
+  加 `wrapmode="CHAR"` 并复位左边距，中文按字符正确换行。
+- **缺字体时优雅降级**：系统无任何中文字体时，`generate_pdf` 抛出清晰中文报错
+  （指引安装字体或改用 Markdown），不再是深层 fpdf traceback。
+
+### Tested
+
+- Streamlit 1.50 环境用 fpdf2 2.8.4 实测：含中文标题、表格、列表、200 字无空格长串的
+  报告成功生成 7 页 PDF（目视确认中文渲染无乱码、长串正确换行）；Markdown 导出正常；
+  无字体路径正确抛 RuntimeError。
+
+---
+
 ## [0.2.8] — 2026-05-30
 
 ### Fixed
