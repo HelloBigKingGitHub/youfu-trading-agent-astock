@@ -275,7 +275,7 @@ streamlit run web/app.py
 | `llm_provider` | `"minimax"` | LLM 提供商：`minimax` / `deepseek` / `qwen` / `glm` / `openai` / `anthropic` / `google` / `xai` / `ollama` |
 | `deep_think_llm` | `"MiniMax-M2.7"` | Research Manager + Portfolio Manager 用的模型 |
 | `quick_think_llm` | `"MiniMax-M2.7-highspeed"` | 所有 Analyst / Researcher / Trader 用的模型 |
-| `backend_url` | `None` | 自定义 API 端点（Kimi、deepseek 等兼容 API） |
+| `backend_url` | `None` | 自定义 API 端点 / 第三方中转网关。可在 Web UI 侧边栏填写，或用 `.env` 的 `BACKEND_URL`；方便国内通过代理访问 Claude / OpenAI |
 | `output_language` | `"Chinese"` | 报告输出语言（内部辩论始终英文） |
 | `max_debate_rounds` | `1` | Bull vs Bear 辩论轮数 |
 | `max_risk_discuss_rounds` | `1` | 风险三方辩论轮数 |

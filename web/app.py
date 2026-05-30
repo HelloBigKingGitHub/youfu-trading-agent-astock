@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -158,6 +159,9 @@ def _build_config() -> dict:
     config["llm_provider"] = st.session_state.get("llm_provider", "minimax")
     config["deep_think_llm"] = st.session_state.get("deep_think_llm", "MiniMax-M2.7")
     config["quick_think_llm"] = st.session_state.get("quick_think_llm", "MiniMax-M2.7-highspeed")
+    # Optional third-party / proxy endpoint. Sidebar input wins, else .env BACKEND_URL.
+    backend_url = (st.session_state.get("llm_base_url") or os.getenv("BACKEND_URL") or "").strip()
+    config["backend_url"] = backend_url or None
     config["data_vendors"] = {
         "core_stock_apis": "a_stock",
         "technical_indicators": "a_stock",
