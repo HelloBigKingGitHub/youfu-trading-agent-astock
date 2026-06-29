@@ -1,0 +1,522 @@
+/* Project-specific semantic classes (.bb-*).
+   BEM naming: bb-block--modifier for state variants.
+   "Bloomberg 精化" — softer radii, depth, multi-weight text, glacier blue. */
+
+/* ── Logo (sidebar + main page) ───────────── */
+.bb-logo {
+    text-align: center;
+    margin-bottom: 1.5rem;
+    padding: 0.5rem 0;
+}
+.bb-logo-text {
+    font-family: var(--font-mono);
+    font-size: 1.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+.bb-logo-text--accent {
+    color: var(--bb-accent);
+    text-shadow: 0 0 20px var(--bb-accent-glow);
+}
+.bb-logo-text--primary {
+    color: var(--text-primary);
+}
+.bb-logo-text--sm {
+    font-size: 1.4rem;
+}
+.bb-logo-subtitle {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 0.3rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 400;
+}
+.bb-logo-author {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-tertiary);
+    margin-top: 0.3rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 400;
+}
+.bb-logo-link {
+    color: var(--bb-accent);
+    text-decoration: none;
+    transition: color 0.15s ease;
+}
+.bb-logo-link:hover {
+    color: var(--bb-accent-bright);
+}
+
+/* ── Hero (main page idle state) ──────────── */
+.bb-hero {
+    text-align: center;
+    margin-bottom: 2.5rem;
+    padding: 1.5rem 0;
+}
+.bb-hero-title {
+    font-family: var(--font-mono);
+    font-size: 2.6rem;
+    font-weight: 700;
+    margin-bottom: 0.6rem;
+    letter-spacing: 0.04em;
+}
+.bb-hero-text {
+    font-family: var(--font-mono);
+    font-size: inherit;
+    font-weight: inherit;
+    letter-spacing: inherit;
+}
+.bb-hero-text--accent  {
+    color: var(--bb-accent);
+    text-shadow: 0 0 24px var(--bb-accent-glow);
+}
+.bb-hero-text--primary { color: var(--text-primary); }
+.bb-hero-subtitle {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    font-weight: 300;
+    max-width: 540px;
+    margin: 0 auto;
+    line-height: 1.6;
+}
+
+/* ── Recent analysis card (idle main page) ── */
+.bb-card {
+    background: linear-gradient(180deg, var(--bg-elevated) 0%, var(--bg-surface) 100%);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    text-align: center;
+    box-shadow: var(--shadow-sm);
+    transition: all 0.2s ease;
+}
+.bb-card:hover {
+    border-color: var(--bb-accent-dim);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+.bb-card-ticker {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.04em;
+}
+.bb-card-date {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    margin-top: 0.2rem;
+    font-weight: 400;
+}
+.bb-card-status {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+    margin-top: 0.3rem;
+}
+
+/* ── Recent analysis card — v0 layout (ticker+name left, badge right) ── */
+.bb-card-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    text-align: left;
+}
+.bb-card-left {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+.bb-card-name {
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-top: 0.15rem;
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0.02em;
+}
+.bb-card-row .bb-card-ticker { font-size: 1.05rem; }
+.bb-card-row .bb-card-date { margin-top: 0.45rem; }
+
+.bb-card-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    flex-shrink: 0;
+}
+.bb-card-badge-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 6px currentColor;
+    flex-shrink: 0;
+}
+.bb-card-badge--bull {
+    color: var(--bb-up);
+    background: rgba(0, 214, 143, 0.08);
+    border-color: rgba(0, 214, 143, 0.28);
+}
+.bb-card-badge--bear {
+    color: var(--bb-down);
+    background: rgba(255, 77, 109, 0.08);
+    border-color: rgba(255, 77, 109, 0.28);
+}
+.bb-card-badge--hold {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.08);
+    border-color: rgba(251, 191, 36, 0.28);
+}
+.bb-card-badge--neutral {
+    color: var(--bb-neutral);
+    background: var(--bb-accent-soft);
+    border-color: var(--border-2);
+}
+.bb-card-badge--running {
+    color: var(--bb-accent-bright);
+    background: var(--bb-accent-soft);
+    border-color: var(--bb-accent-dim);
+}
+.bb-card-badge--running .bb-card-badge-dot {
+    animation: bb-pulse 1.6s ease-in-out infinite;
+}
+.bb-card-badge--error {
+    color: var(--bb-down);
+    background: rgba(255, 77, 109, 0.08);
+    border-color: rgba(255, 77, 109, 0.28);
+}
+
+/* Recent analysis section header */
+.bb-recent-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin: 2.5rem 0 1rem;
+    padding: 0 0.25rem;
+}
+.bb-recent-title {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-weight: 500;
+}
+.bb-recent-count {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-tertiary);
+    letter-spacing: 0.08em;
+    font-weight: 400;
+}
+
+/* ── Bottom disclaimer (idle main page) ───── */
+.bb-disclaimer {
+    margin-top: 2.5rem;
+    padding: 1rem 1.5rem;
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+    line-height: 1.6;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 400;
+}
+
+/* ── Page H1 (settings, history) ──────────── */
+.bb-h1 {
+    margin-bottom: 1.8rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-1);
+}
+.bb-h1-title {
+    font-family: var(--font-mono);
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.bb-h1-subtitle {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-top: 0.3rem;
+    font-weight: 300;
+}
+.bb-api-key-hint {
+    font-size: 0.8rem;
+    color: var(--text-tertiary);
+    margin-bottom: 1rem;
+    font-weight: 400;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-elevated);
+    border-radius: var(--radius-sm);
+    border-left: 2px solid var(--bb-accent);
+}
+
+/* ── History table cells ──────────────────── */
+.bb-table-cell {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.04em;
+}
+.bb-table-cell--date {
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+.bb-table-cell--id {
+    font-size: 0.65rem;
+    font-weight: 400;
+    color: var(--text-tertiary);
+    margin-top: 0.2rem;
+}
+.bb-table-error {
+    color: var(--bb-down);
+    font-size: 0.7rem;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+.bb-signal {
+    font-weight: 600;
+    font-size: 0.85rem;
+    font-family: var(--font-mono);
+    letter-spacing: 0.04em;
+}
+.bb-signal--buy     { color: var(--bb-up); }
+.bb-signal--sell    { color: var(--bb-down); }
+.bb-signal--hold    { color: #fbbf24; }
+.bb-signal--neutral { color: var(--bb-neutral); }
+.bb-status {
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+.bb-status--completed { color: var(--bb-up); }
+.bb-status--running   { color: var(--bb-accent); }
+.bb-status--error     { color: var(--bb-down); }
+
+/* ── TRADING SIGNAL large card (report) ───── */
+.bb-trading-signal {
+    background: linear-gradient(180deg, var(--bg-elevated) 0%, var(--bg-surface) 100%);
+    border: 1px solid var(--border-1);
+    border-top: 3px solid var(--bb-accent);
+    border-radius: var(--radius-md);
+    padding: 2rem;
+    text-align: center;
+    margin: 1rem 0 2rem;
+    box-shadow: var(--shadow-md);
+    position: relative;
+    overflow: hidden;
+}
+.bb-trading-signal::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, var(--bb-accent), transparent);
+    opacity: 0.6;
+}
+.bb-trading-signal--buy  { border-top-color: var(--bb-up); }
+.bb-trading-signal--sell { border-top-color: var(--bb-down); }
+.bb-trading-signal--hold { border-top-color: #fbbf24; }
+.bb-trading-signal-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-weight: 500;
+}
+.bb-trading-signal-value {
+    font-family: var(--font-mono);
+    font-size: 3.4rem;
+    font-weight: 700;
+    margin: 0.5rem 0;
+    letter-spacing: 0.06em;
+    line-height: 1.1;
+}
+.bb-trading-signal--buy  .bb-trading-signal-value { color: var(--bb-up);    text-shadow: 0 0 32px rgba(0, 214, 143, 0.3); }
+.bb-trading-signal--sell .bb-trading-signal-value { color: var(--bb-down);  text-shadow: 0 0 32px rgba(255, 77, 109, 0.3); }
+.bb-trading-signal--hold .bb-trading-signal-value { color: #fbbf24;        text-shadow: 0 0 32px rgba(251, 191, 36, 0.3); }
+.bb-trading-signal-ticker {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    color: var(--text-primary);
+    letter-spacing: 0.04em;
+    font-weight: 500;
+}
+.bb-trading-signal-sep {
+    color: var(--text-tertiary);
+    margin: 0 0.3rem;
+}
+.bb-trading-signal-elapsed {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 0.4rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 400;
+}
+
+/* ── Progress panel ───────────────────────── */
+.bb-progress-title {
+    text-align: center;
+    margin: 1rem 0 0.5rem;
+    padding: 0.5rem 0;
+}
+.bb-progress-title-text {
+    font-family: var(--font-mono);
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.bb-progress-ticker {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    color: var(--bb-accent);
+    margin-left: 0.8rem;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    text-shadow: 0 0 12px var(--bb-accent-glow);
+}
+.bb-section-label {
+    margin: 0.8rem 0 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 500;
+}
+.bb-stage-cell {
+    text-align: center;
+    padding: 0.6rem 0;
+}
+.bb-stage-badge {
+    font-size: 1.3rem;
+    line-height: 1;
+}
+.bb-stage-badge--done    { color: var(--bb-up); }
+.bb-stage-badge--active  {
+    color: var(--bb-accent);
+    text-shadow: 0 0 12px var(--bb-accent-glow);
+    animation: bb-pulse 1.8s ease-in-out infinite;
+}
+.bb-stage-badge--pending { color: var(--border-3); }
+
+@keyframes bb-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+}
+
+.bb-stage-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 500;
+}
+.bb-stage-label--active  { color: var(--text-primary); font-weight: 600; }
+.bb-stage-label--pending { color: var(--text-secondary); }
+.bb-stage-label--done    { color: var(--bb-up); }
+.bb-stage-label--lg {
+    font-size: 0.75rem;
+    font-family: var(--font-sans);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+}
+
+/* ── Sector rotation panel ──────────────── */
+
+/* Toolbar (search + min-count) */
+.bb-sector-toolbar {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-md);
+}
+
+/* Data source status row */
+.bb-sector-meta {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0.5rem 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+}
+.bb-sector-meta-ok   { color: var(--bb-up); }
+.bb-sector-meta-fail { color: var(--bb-down); }
+
+/* Concept block header (inside expander) */
+.bb-sector-block-header {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.bb-sector-block-stats {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 400;
+    margin-left: auto;
+}
+
+/* Empty state (all sources failed / no limit-up) */
+.bb-sector-empty {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    background: var(--bg-surface);
+    border: 1px dashed var(--border-2);
+    border-radius: var(--radius-md);
+    margin: 1.5rem 0;
+    line-height: 1.8;
+}

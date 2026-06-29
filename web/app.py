@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import os
 import sys
 import time
@@ -21,9 +22,10 @@ from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
 from web.components.progress_panel import render_progress  # noqa: E402
 from web.components.report_viewer import render_report  # noqa: E402
 from web.components.sidebar import render_sidebar  # noqa: E402
-from web.history import extract_signal, load_analysis  # noqa: E402
+from web.history import extract_signal, get_history, load_analysis  # noqa: E402
 from web.progress import ProgressTracker  # noqa: E402
 from web.runner import run_analysis_in_thread  # noqa: E402
+from web.styles import inject_css  # noqa: E402
 
 # ── Page config ──────────────────────────────────────────────────────────────
 
@@ -33,6 +35,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Inject design-system CSS (tokens, base, components, elements).
+inject_css()
 
 # ── Custom CSS ───────────────────────────────────────────────────────────────
 
@@ -175,6 +180,142 @@ def _build_config() -> dict:
     return config
 
 
+# ── Idle screen helpers (must be defined before state machine uses them) ────
+
+def _signal_badge(signal: str, status: str) -> tuple[str, str]:
+    """Map (signal, status) to (badge_kind, badge_label).
+
+    badge_kind ∈ {bull, bear, hold, neutral, running, error}.
+    Falls back to status-driven colour when signal is empty.
+    """
+    s = (signal or "").upper()
+    if status == "running":
+        return "running", "RUNNING"
+    if status == "error":
+        return "error", "ERROR"
+    if "BUY" in s or "OVERWEIGHT" in s or "LONG" in s:
+        return "bull", signal.upper()
+    if "SELL" in s or "UNDERWEIGHT" in s or "SHORT" in s:
+        return "bear", signal.upper()
+    if "HOLD" in s:
+        return "hold", "HOLD"
+    return "neutral", "—"
+
+
+def _load_code_to_name() -> dict[str, str]:
+    """Live lookup of code→Chinese name via mootdx. Empty dict on TCP timeout.
+
+    mootdx's TCP connect blocks indefinitely when the server is unreachable, so
+    we run the lookup in a thread with a hard wall-clock cap. On any failure
+    (timeout, network error, no entries) we return an empty dict and the UI
+    shows "—" for the name. Per design: no mock dict.
+    """
+    import threading
+
+    holder: list[dict[str, str]] = []
+
+    def _worker() -> None:
+        try:
+            from tradingagents.dataflows.a_stock import _build_name_code_map
+            _, code_to_name = _build_name_code_map()
+            holder.append(code_to_name or {})
+        except Exception:
+            holder.append({})
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=2.0)  # mootdx TCP must respond within 2s
+    return holder[0] if holder else {}
+
+
+def _render_recent_analyses() -> None:
+    """Render the 4 most recent analysis cards below the welcome screen."""
+
+    history = get_history()[:4]
+    if not history:
+        return
+
+    code_to_name = _load_code_to_name()
+
+    st.html(
+        f"""
+        <div class="bb-recent-header">
+            <div class="bb-recent-title">最近分析</div>
+            <div class="bb-recent-count">{len(history)} runs</div>
+        </div>
+        """
+    )
+
+    cols = st.columns(4, gap="small")
+    for col, entry in zip(cols, history):
+        ticker_raw = entry.get("ticker", "")
+        ticker = html.escape(ticker_raw)
+        trade_date = html.escape(entry.get("date", ""))
+        signal = entry.get("signal", "")
+        status = entry.get("status", "")
+        aid = entry.get("analysis_id") or f"{ticker_raw}_{entry.get('date', '')}"
+        name = html.escape(code_to_name.get(ticker_raw, "") or "—")
+        badge_kind, badge_label = _signal_badge(signal, status)
+        badge_label_esc = html.escape(badge_label)
+
+        with col:
+            st.html(
+                f"""
+                <div class="bb-card">
+                    <div class="bb-card-row">
+                        <div class="bb-card-left">
+                            <div class="bb-card-ticker">{ticker}</div>
+                            <div class="bb-card-name">{name}</div>
+                        </div>
+                        <div class="bb-card-badge bb-card-badge--{badge_kind}">
+                            <span class="bb-card-badge-dot"></span>
+                            <span>{badge_label_esc}</span>
+                        </div>
+                    </div>
+                    <div class="bb-card-date">{trade_date}</div>
+                </div>
+                """
+            )
+            if st.button(
+                "查看报告",
+                key=f"recent_view_{aid}",
+                use_container_width=True,
+            ):
+                st.session_state["viewing_history"] = entry.get("path") or None
+                st.session_state["start_analysis"] = None
+                st.rerun()
+
+
+def _render_idle_screen() -> None:
+    """Render the welcome hero + 4 recent analysis cards + disclaimer."""
+
+    st.markdown(
+        """
+        <div class="bb-hero">
+            <div class="bb-hero-title">
+                <span class="bb-hero-text bb-hero-text--accent">TRADING</span><span class="bb-hero-text bb-hero-text--primary">AGENTS</span><span class="bb-hero-text bb-hero-text--primary">-</span><span class="bb-hero-text bb-hero-text--accent">ASTOCK</span>
+            </div>
+            <div class="bb-hero-subtitle">
+                A股多Agent投研分析系统<br>
+                7位AI分析师 · 质量门控 · 多空辩论 · 风控评估 · 最终决策
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    _render_recent_analyses()
+
+    st.html(
+        """
+        <div class="bb-disclaimer">
+            ⚠️ 本项目仅供学习研究与技术演示，不构成任何投资建议。<br>
+            投资决策请咨询持牌专业机构。作者不对使用本工具产生的任何损失承担责任。
+        </div>
+        """
+    )
+
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -239,51 +380,4 @@ elif tracker and tracker.error:
 
 # State 0: Idle — welcome screen
 else:
-    st.markdown(
-        """
-        <div style="
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 60vh;
-            text-align: center;
-        ">
-            <div style="font-size: 4rem; margin-bottom: 1rem;">📈</div>
-            <div style="
-                font-size: 2.5rem;
-                font-weight: 900;
-                margin-bottom: 0.5rem;
-            ">
-                <span style="color: #ff5a1f;">Trading</span><span style="color: #f5f1eb;">Agents</span><span style="color: #f5f1eb;">-</span><span style="color: #ff5a1f;">Astock</span>
-            </div>
-            <div style="color: #888; font-size: 1.1rem; max-width: 500px; line-height: 1.6;">
-                A股多Agent投研分析系统<br>
-                7位AI分析师 → 质量门控 → 多空辩论 → 风控评估 → 最终决策
-            </div>
-            <div style="
-                margin-top: 2rem;
-                padding: 1rem 2rem;
-                border: 1px solid #222;
-                border-radius: 12px;
-                color: #666;
-                font-size: 0.9rem;
-            ">
-                ← 在左侧输入股票代码，开始分析
-            </div>
-            <div style="
-                margin-top: 2.5rem;
-                padding: 0.8rem 1.5rem;
-                color: #555;
-                font-size: 0.75rem;
-                max-width: 500px;
-                line-height: 1.6;
-                border-top: 1px solid #1a1a1a;
-            ">
-                ⚠️ 本项目仅供学习研究与技术演示，不构成任何投资建议。<br>
-                投资决策请咨询持牌专业机构。作者不对使用本工具产生的任何损失承担责任。
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    _render_idle_screen()
