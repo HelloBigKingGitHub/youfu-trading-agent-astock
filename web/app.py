@@ -19,8 +19,11 @@ load_dotenv(_PROJECT_ROOT / ".env")
 
 from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
 
+from web.components.history_panel import render_history_panel  # noqa: E402
 from web.components.progress_panel import render_progress  # noqa: E402
 from web.components.report_viewer import render_report  # noqa: E402
+from web.components.sector_panel import render_sector_panel  # noqa: E402
+from web.components.settings_panel import render_settings_panel  # noqa: E402
 from web.components.sidebar import render_sidebar  # noqa: E402
 from web.history import extract_signal, get_history, load_analysis  # noqa: E402
 from web.progress import ProgressTracker  # noqa: E402
@@ -316,9 +319,45 @@ def _render_idle_screen() -> None:
     )
 
 
+# ── Sidebar nav (4 buttons: analyze / sector / history / settings) ─────────
+
+_NAV_ITEMS: list[tuple[str, str, str]] = [
+    ("📝", "分析", "analyze"),
+    ("📈", "板块轮动", "sector"),
+    ("📋", "历史", "history"),
+    ("⚙️", "设置", "settings"),
+]
+
+
+def _render_nav_buttons() -> None:
+    """Render the 4-button page nav at the top of the sidebar.
+
+    Active page → ``type="primary"`` (gradient accent).
+    Other pages → ``type="secondary"`` (hairline outline).
+
+    Stacked vertically (4 full-width rows) rather than 4 columns because
+    Streamlit's narrow sidebar (~280px) cannot fit 4 button labels side
+    by side without wrapping the Chinese text inside each button.
+
+    Click handler sets ``st.session_state["nav"]`` and reruns.
+    """
+    current = st.session_state.get("nav", "analyze")
+    for icon, label, page in _NAV_ITEMS:
+        if st.button(
+            f"{icon}  {label}",
+            key=f"nav_{page}",
+            type="primary" if current == page else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state["nav"] = page
+            st.rerun()
+
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 
 with st.sidebar:
+    _render_nav_buttons()
+    st.markdown("---")
     render_sidebar()
 
 
@@ -326,6 +365,9 @@ with st.sidebar:
 
 start_req = st.session_state.pop("start_analysis", None)
 if start_req:
+    # Always jump to the analyze page when a new run starts, regardless of
+    # which page the user is currently viewing (sector / history / settings).
+    st.session_state["nav"] = "analyze"
     tracker = ProgressTracker(
         ticker=start_req["ticker"],
         trade_date=start_req["trade_date"],
@@ -339,13 +381,20 @@ if start_req:
     )
 
 
-# ── Main area state machine ─────────────────────────────────────────────────
+# ── Main area dispatch ───────────────────────────────────────────────────────
+#
+# Modal states (viewing a report, analysis running/complete/errored) ALWAYS
+# win over the nav page so the user sees what they actually triggered. The
+# nav button is forced back to "analyze" in those branches so the sidebar
+# indicator stays consistent with what's on screen.
 
 tracker: ProgressTracker | None = st.session_state.get("tracker")
 viewing_history: str | None = st.session_state.get("viewing_history")
+nav: str = st.session_state.get("nav", "analyze")
 
-# State 1: Viewing a historical analysis
+# Modal state 1: Viewing a historical analysis
 if viewing_history:
+    st.session_state["nav"] = "analyze"
     try:
         state = load_analysis(viewing_history)
         signal = extract_signal(state)
@@ -355,14 +404,16 @@ if viewing_history:
     except Exception as exc:
         st.error(f"加载失败: {exc}")
 
-# State 2: Analysis running
+# Modal state 2: Analysis running
 elif tracker and tracker.is_running:
+    st.session_state["nav"] = "analyze"
     render_progress(tracker)
     time.sleep(2)
     st.rerun()
 
-# State 3: Analysis complete
+# Modal state 3: Analysis complete
 elif tracker and tracker.is_complete:
+    st.session_state["nav"] = "analyze"
     render_report(
         tracker.final_state,
         tracker.ticker,
@@ -371,13 +422,24 @@ elif tracker and tracker.is_complete:
         elapsed=tracker.elapsed,
     )
 
-# State 4: Analysis errored
+# Modal state 4: Analysis errored
 elif tracker and tracker.error:
+    st.session_state["nav"] = "analyze"
     st.error(f"分析失败: {tracker.error}")
     if st.button("重试"):
         st.session_state.pop("tracker", None)
         st.rerun()
 
-# State 0: Idle — welcome screen
+# Nav dispatch (no modal state active)
+elif nav == "sector":
+    render_sector_panel()
+
+elif nav == "history":
+    render_history_panel()
+
+elif nav == "settings":
+    render_settings_panel()
+
+# Default: analyze idle screen
 else:
     _render_idle_screen()
