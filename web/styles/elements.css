@@ -459,6 +459,235 @@
     font-weight: 400;
 }
 
+/* ── Sidebar (Bloomberg glacier-blue terminal) ── */
+
+/* Scope all sidebar styles to the Streamlit sidebar element so they never
+   leak into the main area. */
+section[data-testid="stSidebar"] {
+
+/* Section separator (subtle hairline between sidebar blocks) */
+.bb-sidebar-sep {
+    height: 1px;
+    background: var(--border-1);
+    margin: 0.85rem 0;
+}
+
+/* Box block (logo / form wrapper) */
+.bb-sidebar-block {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-md);
+    padding: 0.85rem 0.9rem;
+    box-shadow: var(--shadow-sm);
+}
+
+/* Logo block: glacier-blue glow, two-tone TRADINGAGENTS-ASTOCK */
+.bb-sidebar-logo {
+    text-align: center;
+    margin-top: 0.25rem;
+}
+.bb-sidebar-logo .bb-logo-text {
+    font-family: var(--font-mono);
+    font-size: 0.88rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.bb-sidebar-logo .bb-logo-text--accent {
+    color: var(--bb-accent-bright);
+    text-shadow: 0 0 18px var(--bb-accent-glow);
+}
+.bb-sidebar-logo .bb-logo-text--primary {
+    color: var(--text-primary);
+}
+.bb-sidebar-logo .bb-logo-subtitle {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    margin-top: 0.45rem;
+    text-transform: none;
+    letter-spacing: 0.02em;
+    font-weight: 400;
+}
+.bb-sidebar-logo .bb-logo-author {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    color: var(--text-tertiary);
+    margin-top: 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 400;
+}
+
+/* Section label (新建分析 / 历史记录) */
+.bb-sidebar-section-label {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-weight: 600;
+}
+.bb-sidebar-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 1.1rem 0 0.5rem;
+    padding: 0 0.15rem;
+}
+.bb-sidebar-count {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-tertiary);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-1);
+    border-radius: 999px;
+    padding: 0.05rem 0.45rem;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+}
+
+/* Form block wrapper — Streamlit st.container(border=True) gets a box.
+   We override its border + background to match the design system. */
+.st-key-sidebar_form_container {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border-1) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 0.75rem 0.85rem 0.9rem !important;
+    box-shadow: var(--shadow-sm) !important;
+}
+.st-key-sidebar_form_container .bb-sidebar-section-label {
+    margin-bottom: 0.5rem;
+}
+.st-key-sidebar_form_container [data-testid="stTextInputRootElement"],
+.st-key-sidebar_form_container [data-testid="stDateInput"] { margin-top: 0; }
+
+/* Compact streamlit widget labels inside the sidebar form */
+.st-key-sidebar_form_container [data-testid="stWidgetLabel"] p {
+    font-size: 0.7rem !important;
+    color: var(--text-secondary) !important;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 500;
+    margin-bottom: 0.2rem;
+}
+
+/* History list items */
+.bb-sidebar-history-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    background: linear-gradient(180deg, var(--bg-elevated) 0%, var(--bg-surface) 100%);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.6rem;
+    margin-bottom: 0.1rem;
+    transition: all 0.15s ease;
+    box-shadow: var(--shadow-sm);
+}
+.bb-sidebar-history-item:hover {
+    border-color: var(--bb-accent-dim);
+    transform: translateX(2px);
+    box-shadow: var(--shadow-md);
+}
+.bb-sidebar-history-item--active {
+    border-color: var(--bb-accent);
+    background: var(--bb-accent-soft);
+    box-shadow: var(--shadow-md), 0 0 0 1px var(--bb-accent-dim);
+}
+.bb-sidebar-history-left {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+.bb-sidebar-history-ticker {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.04em;
+}
+.bb-sidebar-history-date {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    color: var(--text-secondary);
+    margin-top: 0.15rem;
+    font-weight: 400;
+    letter-spacing: 0.04em;
+}
+
+/* Compact badge inside history list */
+.bb-sidebar-history-item .bb-card-badge {
+    font-size: 0.55rem;
+    padding: 0.15rem 0.45rem;
+    letter-spacing: 0.06em;
+}
+.bb-sidebar-history-item .bb-card-badge-dot {
+    width: 5px;
+    height: 5px;
+    box-shadow: 0 0 4px currentColor;
+}
+
+/* Make the "查看报告" button under each history card a tiny ghost link
+   so it doesn't visually fight the card above it. */
+.bb-sidebar button[kind="secondary"][data-testid="stBaseButton-secondary"] {
+    background: transparent !important;
+    border: none !important;
+    color: var(--text-tertiary) !important;
+    font-size: 0.65rem !important;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 500;
+    margin: 0 0 0.55rem 0 !important;
+    padding: 0.1rem 0 !important;
+    box-shadow: none !important;
+    min-height: 0 !important;
+    height: auto !important;
+    line-height: 1.2 !important;
+}
+.bb-sidebar button[kind="secondary"][data-testid="stBaseButton-secondary"]:hover {
+    color: var(--bb-accent-bright) !important;
+    background: transparent !important;
+    border: none !important;
+    transform: none !important;
+}
+
+/* Empty state for history */
+.bb-sidebar-empty {
+    text-align: center;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 1.5rem 0.5rem;
+    border: 1px dashed var(--border-2);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+}
+
+/* Bottom disclaimer */
+.bb-sidebar-disclaimer {
+    margin-top: 1rem;
+    padding: 0.7rem 0.5rem;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 400;
+    line-height: 1.6;
+    border-top: 1px solid var(--border-1);
+}
+
+}  /* end scope: section[data-testid="stSidebar"] */
+
 /* ── Sector rotation panel ──────────────── */
 
 /* Toolbar (search + min-count) */

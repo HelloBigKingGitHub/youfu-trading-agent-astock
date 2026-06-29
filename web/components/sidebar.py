@@ -1,12 +1,14 @@
-"""Sidebar: stock input, LLM config, and history list."""
+"""Sidebar: logo header, stock input, LLM config, and history list."""
 
 from __future__ import annotations
 
+import html
 from datetime import date
 
 import streamlit as st
 
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
+from web._signal_helpers import signal_badge
 from web.history import get_history
 
 # Provider display names in recommended order
@@ -39,6 +41,28 @@ def _resolve_user_input(raw: str) -> tuple[str, str | None]:
         return code, None
     except ValueError as e:
         return "", str(e)
+
+
+def _current_model_label() -> str:
+    """Return a short label for the currently selected (provider, model).
+
+    Falls back to provider + llm_base_url hint if model is not in the catalog.
+    Used in the expander title to surface the active model at a glance.
+    """
+    provider_idx = st.session_state.get("llm_provider_idx", 0)
+    quick_idx = st.session_state.get("quick_model_idx", 0)
+    if 0 <= provider_idx < len(_PROVIDERS):
+        provider_name = _PROVIDER_DISPLAY[provider_idx].split("（")[0]
+    else:
+        provider_name = "LLM"
+    # Prefer the short model id (e.g. "MiniMax-M2.7-highspeed") over the long
+    # display label so the expander title fits on one line in the narrow sidebar.
+    quick = "—"
+    if 0 <= provider_idx < len(_PROVIDERS) and _PROVIDER_KEYS[provider_idx] in MODEL_OPTIONS:
+        quick_options = MODEL_OPTIONS[_PROVIDER_KEYS[provider_idx]]["quick"]
+        if 0 <= quick_idx < len(quick_options):
+            quick = quick_options[quick_idx][1]
+    return f"{provider_name} · {quick}"
 
 
 def _render_llm_config() -> None:
@@ -99,31 +123,82 @@ def _render_llm_config() -> None:
     )
 
 
-def render_sidebar() -> None:
-    """Render the sidebar with input controls and history."""
+def render_sidebar_logo() -> None:
+    """Render the sidebar's top logo block (glacier-blue Bloomberg style)."""
 
-    st.markdown(
+    st.html(
         """
-        <div style="text-align:center; margin-bottom:1.5rem;">
-            <span style="font-size:2rem; font-weight:800; color:#ff5a1f;">Trading</span><span style="font-size:2rem; font-weight:800; color:#f5f1eb;">Agents</span><span style="font-size:2rem; font-weight:800; color:#f5f1eb;">-</span><span style="font-size:2rem; font-weight:800; color:#ff5a1f;">Astock</span>
-            <div style="font-size:0.85rem; color:#888; margin-top:0.2rem;">
-                A股多Agent投研系统
+        <div class="bb-sidebar-block bb-sidebar-logo">
+            <div class="bb-logo-text">
+                <span class="bb-logo-text--accent">TRADING</span><span class="bb-logo-text--primary">AGENTS</span><span class="bb-logo-text--primary">-</span><span class="bb-logo-text--accent">ASTOCK</span>
             </div>
-            <div style="font-size:0.7rem; color:#555; margin-top:0.3rem;">
-                by <a href="https://github.com/simonlin1212" style="color:#ff5a1f; text-decoration:none;">simonlin1212</a>
+            <div class="bb-logo-subtitle">A股多 Agent 投研系统</div>
+            <div class="bb-logo-author">
+                by <a class="bb-logo-link" href="https://github.com/simonlin1212" target="_blank">simonlin1212</a>
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
-    st.markdown("---")
-    st.markdown("#### 新建分析")
+
+def _render_history_entry(entry: dict) -> None:
+    """Render one sidebar history row as a ticker + date + signal badge.
+
+    Streamlit buttons don't allow custom inner HTML, so we render the visual
+    row with st.html and put a real button underneath for the click target.
+    The button keeps a unique key per analysis_id (see b17eb0f).
+    """
+    ticker_raw = entry.get("ticker", "")
+    ticker = html.escape(ticker_raw)
+    trade_date = html.escape(entry.get("date", ""))
+    signal = entry.get("signal", "") or ""
+    status = entry.get("status", "") or ""
+    aid = entry.get("analysis_id") or f"{ticker_raw}_{entry.get('date', '')}"
+    badge_kind, badge_label = signal_badge(signal, status)
+    badge_label_esc = html.escape(badge_label)
+    active_path = st.session_state.get("viewing_history")
+    is_active = bool(active_path) and active_path == entry.get("path")
+
+    st.html(
+        f"""
+        <div class="bb-sidebar-history-item{' bb-sidebar-history-item--active' if is_active else ''}">
+            <div class="bb-sidebar-history-left">
+                <div class="bb-sidebar-history-ticker">{ticker}</div>
+                <div class="bb-sidebar-history-date">{trade_date}</div>
+            </div>
+            <div class="bb-card-badge bb-card-badge--{badge_kind}">
+                <span class="bb-card-badge-dot"></span>
+                <span>{badge_label_esc}</span>
+            </div>
+        </div>
+        """
+    )
+    if st.button(
+        "查看报告",
+        key=f"hist_{aid}",
+        use_container_width=True,
+    ):
+        st.session_state["viewing_history"] = entry.get("path") or None
+        st.session_state["start_analysis"] = None
+        st.rerun()
+
+
+def render_sidebar() -> None:
+    """Render the new-analysis form, history list, and disclaimer."""
+
+    st.html(
+        """
+        <div class="bb-sidebar-form-box">
+            <div class="bb-sidebar-section-label">新建分析</div>
+        </div>
+        """
+    )
 
     ticker = st.text_input(
         "股票代码",
         placeholder="例: 300750 或 宁德时代",
         key="input_ticker",
+        label_visibility="collapsed",
         help="输入6位A股代码或中文股票全称",
     )
 
@@ -133,7 +208,7 @@ def render_sidebar() -> None:
         key="input_date",
     )
 
-    with st.expander("⚙️ 模型配置", expanded=False):
+    with st.expander(f"⚙️  模型配置  ·  {_current_model_label()}", expanded=False):
         _render_llm_config()
 
     tracker = st.session_state.get("tracker")
@@ -144,6 +219,7 @@ def render_sidebar() -> None:
         use_container_width=True,
         disabled=is_busy or not ticker,
         type="primary",
+        key="sidebar_start_analysis",
     ):
         resolved_code, err = _resolve_user_input(ticker)
         if err:
@@ -151,27 +227,38 @@ def render_sidebar() -> None:
         else:
             if resolved_code != ticker.strip():
                 st.success(f"✅ {ticker.strip()} → {resolved_code}")
-            st.session_state["start_analysis"] = {
-                "ticker": resolved_code,
-                "trade_date": trade_date.strftime("%Y-%m-%d"),
-            }
-            st.session_state["viewing_history"] = None
-
-    st.markdown("---")
-    st.markdown("#### 历史记录")
+        st.session_state["start_analysis"] = {
+            "ticker": resolved_code,
+            "trade_date": trade_date.strftime("%Y-%m-%d"),
+        }
+        st.session_state["viewing_history"] = None
+        st.rerun()
 
     history = get_history()
+    count = len(history)
+    st.html(
+        f"""
+        <div class="bb-sidebar-section-header">
+            <span class="bb-sidebar-section-label">历史记录</span>
+            <span class="bb-sidebar-count">{count}</span>
+        </div>
+        """
+    )
+
     if not history:
-        st.caption("暂无历史记录")
-        return
+        st.html(
+            """
+            <div class="bb-sidebar-empty">暂无历史记录</div>
+            """
+        )
+    else:
+        for entry in history[:20]:
+            _render_history_entry(entry)
 
-    for entry in history[:20]:
-        t, d = entry["ticker"], entry["date"]
-        aid = entry.get("analysis_id") or f"{t}_{d}"
-        label = f"{t}  ·  {d}"
-        if st.button(label, key=f"hist_{aid}", use_container_width=True):
-            st.session_state["viewing_history"] = entry["path"]
-            st.session_state["start_analysis"] = None
-
-    st.markdown("---")
-    st.caption("⚠️ 仅供学习研究，不构成投资建议")
+    st.html(
+        """
+        <div class="bb-sidebar-disclaimer">
+            ⚠️ 仅供学习研究，不构成投资建议
+        </div>
+        """
+    )

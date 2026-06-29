@@ -24,10 +24,11 @@ from web.components.progress_panel import render_progress  # noqa: E402
 from web.components.report_viewer import render_report  # noqa: E402
 from web.components.sector_panel import render_sector_panel  # noqa: E402
 from web.components.settings_panel import render_settings_panel  # noqa: E402
-from web.components.sidebar import render_sidebar  # noqa: E402
+from web.components.sidebar import render_sidebar, render_sidebar_logo  # noqa: E402
 from web.history import extract_signal, get_history, load_analysis  # noqa: E402
 from web.progress import ProgressTracker  # noqa: E402
 from web.runner import run_analysis_in_thread  # noqa: E402
+from web._signal_helpers import signal_badge as _signal_badge  # noqa: E402
 from web.styles import inject_css  # noqa: E402
 
 # ── Page config ──────────────────────────────────────────────────────────────
@@ -40,124 +41,10 @@ st.set_page_config(
 )
 
 # Inject design-system CSS (tokens, base, components, elements).
+# base.css already imports the Inter font, hides Streamlit chrome, sets the
+# sidebar gradient, and keeps the collapse/expand controls visible, so no
+# custom <style> block is needed in this file.
 inject_css()
-
-# ── Custom CSS ───────────────────────────────────────────────────────────────
-
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
-
-    /* Hide Streamlit chrome for clean video recording.
-       IMPORTANT: do NOT `display:none` the whole header OR the whole toolbar.
-       In Streamlit >= 1.36 the "expand sidebar" button lives *inside* the
-       toolbar (header > stToolbar > stExpandSidebarButton), so hiding either
-       one makes a collapsed sidebar impossible to reopen (issue #36). Instead
-       keep the header/toolbar in the DOM, make the header transparent, and
-       hide only the individual chrome widgets we don't want on camera. */
-    #MainMenu,
-    footer,
-    div[data-testid="stDecoration"],
-    div[data-testid="stStatusWidget"],
-    div[data-testid="stToolbarActions"],
-    div[data-testid="stAppDeployButton"],
-    span[data-testid="stMainMenu"] { display: none !important; }
-    header[data-testid="stHeader"] {
-        background: transparent !important;
-        box-shadow: none !important;
-    }
-    /* Keep the sidebar collapse / expand controls always visible & clickable.
-       Selector list spans multiple Streamlit versions. */
-    button[data-testid="stExpandSidebarButton"],
-    button[data-testid="stSidebarCollapseButton"],
-    button[data-testid="collapsedControl"],
-    [data-testid="stSidebarCollapsedControl"] {
-        display: flex !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-    }
-
-    html, body, [class*="css"] {
-        font-family: 'Inter', -apple-system, sans-serif;
-    }
-    .stApp {
-        background: #0a0a0a;
-    }
-    section[data-testid="stSidebar"] {
-        background: #0f0f0f;
-        border-right: 1px solid #1a1a1a;
-    }
-    .stMetric label { color: #888 !important; font-size: 0.8rem !important; }
-    .stMetric [data-testid="stMetricValue"] {
-        color: #ff5a1f !important;
-        font-weight: 700 !important;
-    }
-    .stProgress > div > div > div {
-        background: linear-gradient(90deg, #ff5a1f, #ff8c42) !important;
-    }
-    button[kind="primary"] {
-        background: linear-gradient(135deg, #ff5a1f, #ff8c42) !important;
-        border: none !important;
-        font-weight: 700 !important;
-        letter-spacing: 0.05em !important;
-        box-shadow: 0 4px 15px rgba(255,90,31,0.3) !important;
-        transition: all 0.2s ease !important;
-    }
-    button[kind="primary"]:hover {
-        background: linear-gradient(135deg, #e04d15, #ff5a1f) !important;
-        box-shadow: 0 6px 20px rgba(255,90,31,0.4) !important;
-        transform: translateY(-1px) !important;
-    }
-    /* Secondary buttons (history items) */
-    button[kind="secondary"] {
-        background: #161616 !important;
-        border: 1px solid #2a2a2a !important;
-        color: #ccc !important;
-        transition: all 0.2s ease !important;
-    }
-    button[kind="secondary"]:hover {
-        background: #1e1e1e !important;
-        border-color: #ff5a1f !important;
-        color: #ff5a1f !important;
-    }
-    .stExpander {
-        border: 1px solid #222 !important;
-        border-radius: 8px !important;
-    }
-    .stTabs [data-baseweb="tab"] {
-        color: #888 !important;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #ff5a1f !important;
-        border-bottom-color: #ff5a1f !important;
-    }
-    div[data-testid="stDownloadButton"] button {
-        background: #1a1a2e !important;
-        border: 1px solid #ff5a1f !important;
-        color: #ff5a1f !important;
-    }
-    /* Text input styling */
-    input[data-testid="stTextInputRootElement"] input,
-    .stTextInput input {
-        background: #161616 !important;
-        border-color: #2a2a2a !important;
-        color: #f5f1eb !important;
-    }
-    .stTextInput input:focus {
-        border-color: #ff5a1f !important;
-        box-shadow: 0 0 0 1px #ff5a1f !important;
-    }
-    /* Date input styling */
-    .stDateInput input {
-        background: #161616 !important;
-        border-color: #2a2a2a !important;
-        color: #f5f1eb !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 
 # ── Build config ─────────────────────────────────────────────────────────────
@@ -184,26 +71,6 @@ def _build_config() -> dict:
 
 
 # ── Idle screen helpers (must be defined before state machine uses them) ────
-
-def _signal_badge(signal: str, status: str) -> tuple[str, str]:
-    """Map (signal, status) to (badge_kind, badge_label).
-
-    badge_kind ∈ {bull, bear, hold, neutral, running, error}.
-    Falls back to status-driven colour when signal is empty.
-    """
-    s = (signal or "").upper()
-    if status == "running":
-        return "running", "RUNNING"
-    if status == "error":
-        return "error", "ERROR"
-    if "BUY" in s or "OVERWEIGHT" in s or "LONG" in s:
-        return "bull", signal.upper()
-    if "SELL" in s or "UNDERWEIGHT" in s or "SHORT" in s:
-        return "bear", signal.upper()
-    if "HOLD" in s:
-        return "hold", "HOLD"
-    return "neutral", "—"
-
 
 def _load_code_to_name() -> dict[str, str]:
     """Live lookup of code→Chinese name via mootdx. Empty dict on TCP timeout.
@@ -356,8 +223,10 @@ def _render_nav_buttons() -> None:
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 
 with st.sidebar:
+    render_sidebar_logo()
+    st.markdown("<div class='bb-sidebar-sep'></div>", unsafe_allow_html=True)
     _render_nav_buttons()
-    st.markdown("---")
+    st.markdown("<div class='bb-sidebar-sep'></div>", unsafe_allow_html=True)
     render_sidebar()
 
 
