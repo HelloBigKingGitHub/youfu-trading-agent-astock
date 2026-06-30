@@ -76,84 +76,117 @@ def _load_code_to_name() -> dict[str, str]:
     """Live lookup of code→Chinese name via mootdx. Empty dict on TCP timeout.
 
     mootdx's TCP connect blocks indefinitely when the server is unreachable, so
-    we run the lookup in a thread with a hard wall-clock cap. On any failure
-    (timeout, network error, no entries) we return an empty dict and the UI
-    shows "—" for the name. Per design: no mock dict.
-    """
-    import threading
+    a pre-fetched ``st.session_state['_code_name_map']`` (populated at app
+    start by a fire-and-forget thread) is returned. If the thread hasn't
+    finished yet, an empty dict is returned and the UI shows "—" for the
+    name. The thread itself never blocks the Streamlit render path.
 
-    holder: list[dict[str, str]] = []
+    NOTE: the import happens inside the worker thread. Streamlit's script
+    runner and Python's import lock can interact badly when ``a_stock`` is
+    imported for the *first* time from inside a daemon thread; in that
+    situation the lookup hangs. We keep the worker so the first successful
+    pre-fetch seeds the cache, but the render path treats an empty result as
+    acceptable.
+    """
+    return st.session_state.get("_code_name_map") or {}
+
+
+def _kick_off_code_name_loader() -> None:
+    """Fire-and-forget thread that warms the code→name cache.
+
+    Imported and started once at app start. Populates
+    ``st.session_state['_code_name_map']`` when mootdx responds in time;
+    on timeout / error it writes ``{}``. The thread is daemon=True so it
+    never blocks process shutdown.
+    """
+    if st.session_state.get("_code_name_map_started"):
+        return
+    st.session_state["_code_name_map_started"] = True
+
+    import threading
 
     def _worker() -> None:
         try:
             from tradingagents.dataflows.a_stock import _build_name_code_map
-            _, code_to_name = _build_name_code_map()
-            holder.append(code_to_name or {})
-        except Exception:
-            holder.append({})
 
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join(timeout=2.0)  # mootdx TCP must respond within 2s
-    return holder[0] if holder else {}
+            _, code_to_name = _build_name_code_map()
+            st.session_state["_code_name_map"] = code_to_name or {}
+        except BaseException:
+            st.session_state["_code_name_map"] = {}
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+# Kick off the code→Chinese-name cache loader as a fire-and-forget daemon.
+# The lookup itself requires mootdx's TCP connect (can block ~2s) plus an
+# import of tradingagents.dataflows.a_stock which has been observed to
+# deadlock the Streamlit script runner when first imported from a worker.
+# We start it once per process and let it populate
+# ``st.session_state['_code_name_map']`` for the cards to consume later.
+_kick_off_code_name_loader()
 
 
 def _render_recent_analyses() -> None:
     """Render the 4 most recent analysis cards below the welcome screen."""
+    try:
+        history = get_history()[:4]
+        if not history:
+            return
 
-    history = get_history()[:4]
-    if not history:
-        return
+        try:
+            code_to_name = _load_code_to_name()
+        except Exception:
+            code_to_name = {}
 
-    code_to_name = _load_code_to_name()
+        st.html(
+            f"""
+            <div class="bb-recent-header">
+                <div class="bb-recent-title">最近分析</div>
+                <div class="bb-recent-count">{len(history)} runs</div>
+            </div>
+            """
+        )
 
-    st.html(
-        f"""
-        <div class="bb-recent-header">
-            <div class="bb-recent-title">最近分析</div>
-            <div class="bb-recent-count">{len(history)} runs</div>
-        </div>
-        """
-    )
+        cols = st.columns(4, gap="small")
+        for col, entry in zip(cols, history):
+            ticker_raw = entry.get("ticker", "")
+            ticker = html.escape(ticker_raw)
+            trade_date = html.escape(entry.get("date", ""))
+            signal = entry.get("signal", "")
+            status = entry.get("status", "")
+            aid = entry.get("analysis_id") or f"{ticker_raw}_{entry.get('date', '')}"
+            name = html.escape(code_to_name.get(ticker_raw, "") or "—")
+            badge_kind, badge_label = _signal_badge(signal, status)
+            badge_label_esc = html.escape(badge_label)
 
-    cols = st.columns(4, gap="small")
-    for col, entry in zip(cols, history):
-        ticker_raw = entry.get("ticker", "")
-        ticker = html.escape(ticker_raw)
-        trade_date = html.escape(entry.get("date", ""))
-        signal = entry.get("signal", "")
-        status = entry.get("status", "")
-        aid = entry.get("analysis_id") or f"{ticker_raw}_{entry.get('date', '')}"
-        name = html.escape(code_to_name.get(ticker_raw, "") or "—")
-        badge_kind, badge_label = _signal_badge(signal, status)
-        badge_label_esc = html.escape(badge_label)
-
-        with col:
-            st.html(
-                f"""
-                <div class="bb-card">
-                    <div class="bb-card-row">
-                        <div class="bb-card-left">
-                            <div class="bb-card-ticker">{ticker}</div>
-                            <div class="bb-card-name">{name}</div>
+            with col:
+                st.html(
+                    f"""
+                    <div class="bb-card">
+                        <div class="bb-card-row">
+                            <div class="bb-card-left">
+                                <div class="bb-card-ticker">{ticker}</div>
+                                <div class="bb-card-name">{name}</div>
+                            </div>
+                            <div class="bb-card-badge bb-card-badge--{badge_kind}">
+                                <span class="bb-card-badge-dot"></span>
+                                <span>{badge_label_esc}</span>
+                            </div>
                         </div>
-                        <div class="bb-card-badge bb-card-badge--{badge_kind}">
-                            <span class="bb-card-badge-dot"></span>
-                            <span>{badge_label_esc}</span>
-                        </div>
+                        <div class="bb-card-date">{trade_date}</div>
                     </div>
-                    <div class="bb-card-date">{trade_date}</div>
-                </div>
-                """
-            )
-            if st.button(
-                "查看报告",
-                key=f"recent_view_{aid}",
-                use_container_width=True,
-            ):
-                st.session_state["viewing_history"] = entry.get("path") or None
-                st.session_state["start_analysis"] = None
-                st.rerun()
+                    """
+                )
+                if st.button(
+                    "查看报告",
+                    key=f"recent_view_{aid}",
+                    use_container_width=True,
+                ):
+                    st.session_state["viewing_history"] = entry.get("path") or None
+                    st.session_state["start_analysis"] = None
+                    st.rerun()
+    except Exception as exc:
+        st.warning(f"最近分析加载异常: {exc}")
 
 
 def _render_analysis_form() -> None:
@@ -216,6 +249,8 @@ def _render_analysis_form() -> None:
 def _render_idle_screen() -> None:
     """Render the new-analysis form + welcome hero + 4 recent analysis cards + disclaimer."""
 
+    _render_recent_analyses()
+
     _render_analysis_form()
 
     st.markdown(
@@ -233,7 +268,6 @@ def _render_idle_screen() -> None:
         unsafe_allow_html=True,
     )
 
-    _render_recent_analyses()
 
     st.html(
         """
@@ -370,4 +404,7 @@ elif nav == "settings":
 
 # Default: analyze idle screen
 else:
-    _render_idle_screen()
+    try:
+        _render_idle_screen()
+    except Exception as e:
+        st.error(f"渲染失败: {e}")
