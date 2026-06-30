@@ -686,6 +686,93 @@ section[data-testid="stSidebar"] {
     border-top: 1px solid var(--border-1);
 }
 
+/* ── Sidebar nav section grouping ──────────
+   The 4 nav buttons (analyze/sector/history/settings) are rendered by
+   app.py via _render_nav_buttons(). Rather than change that function,
+   we group them visually here in two sections ("导航" / "管理") via CSS.
+
+   - ::before pseudo-elements inject the section labels above the first
+     button of each group.
+   - Background + border-radius on each container produce a single card.
+   - box-shadow inset on the active (kind="primary") button draws a 3px
+     glacier-blue indicator on the left without shifting the text. */
+
+/* Section labels: "导航" above the first button, "管理" above the third */
+.st-key-nav_analyze::before,
+.st-key-nav_history::before {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    padding: 10px 8px 6px;
+}
+.st-key-nav_analyze::before { content: "导航"; }
+.st-key-nav_history::before {
+    content: "管理";
+    border-top: 1px solid var(--border-1);
+    margin-top: 10px;
+    padding-top: 14px;
+}
+
+/* Wrap the 4 nav buttons in a unified card visual */
+.st-key-nav_analyze,
+.st-key-nav_sector,
+.st-key-nav_history,
+.st-key-nav_settings {
+    background: var(--bg-elevated);
+    border-left: 1px solid var(--border-1);
+    border-right: 1px solid var(--border-1);
+    padding: 2px 8px;
+    box-shadow: var(--shadow-sm);
+}
+.st-key-nav_analyze {
+    border-top: 1px solid var(--border-1);
+    border-top-left-radius: var(--radius-md);
+    border-top-right-radius: var(--radius-md);
+    padding-top: 0;
+}
+.st-key-nav_settings {
+    border-bottom: 1px solid var(--border-1);
+    border-bottom-left-radius: var(--radius-md);
+    border-bottom-right-radius: var(--radius-md);
+    margin-bottom: 0.5rem;
+    padding-bottom: 4px;
+}
+
+/* Reset button radius so the row fits flush inside the card */
+.st-key-nav_analyze button,
+.st-key-nav_sector button,
+.st-key-nav_history button,
+.st-key-nav_settings button {
+    border-radius: var(--radius-sm) !important;
+}
+
+/* Active page indicator: 3px glacier-blue bar on the left edge of the
+   primary (active) nav button. box-shadow inset avoids any text shift;
+   use --bb-accent-bright + outer glow so the indicator stays visible on
+   top of the gradient primary background. */
+.st-key-nav_analyze button[kind="primary"],
+.st-key-nav_sector button[kind="primary"],
+.st-key-nav_history button[kind="primary"],
+.st-key-nav_settings button[kind="primary"] {
+    box-shadow: inset 3px 0 0 0 var(--bb-accent-bright),
+                0 0 8px 0 var(--bb-accent-glow),
+                var(--shadow-sm),
+                0 0 0 0 var(--bb-accent-glow) !important;
+}
+
+/* Hover state for inactive nav buttons: accent border + soft bg */
+.st-key-nav_analyze button[kind="secondary"]:hover,
+.st-key-nav_sector button[kind="secondary"]:hover,
+.st-key-nav_history button[kind="secondary"]:hover,
+.st-key-nav_settings button[kind="secondary"]:hover {
+    border-color: var(--bb-accent-dim) !important;
+    background: var(--bb-accent-soft) !important;
+}
+
 }  /* end scope: section[data-testid="stSidebar"] */
 
 /* ── Sector rotation panel ──────────────── */

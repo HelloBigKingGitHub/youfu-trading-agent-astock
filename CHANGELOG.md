@@ -6,6 +6,109 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [Unreleased]
+
+### Changed
+
+- **Sidebar nav 分组（仅视觉）**：4 按钮 nav (分析/板块轮动/历史/设置) 视觉上分为两组
+  - 「导航」组：📊 分析 / 📈 板块轮动
+  - 「管理」组：📋 历史 / ⚙️ 设置
+  - 实施方式：纯 CSS（`web/styles/elements.css` 内 +87 行），通过 `::before` 伪元素注入
+    section 标签，通过 `box-shadow inset` 在 primary 按钮左侧画 3px 冰川蓝指示条。
+  - **未触碰** `web/app.py` 或 `_NAV_ITEMS` / `_render_nav_buttons`（保持前 4 个 commit 的
+    既有 helper 不变），分组效果全部由 CSS 完成。
+
+## [0.2.13] — 2026-06-25
+
+### Fixed
+
+- **板块轮动当日数据解析（v0.2.13 hotfix）**：THS `get_hot_stocks` 在当日盘中
+  返回的 rows 缺少 `zhangfu`/`huanshou`/`chengjiaoe`/`ddejingliang` 字段（原字段值
+  为 `None`）。旧版 `_extract_limitup_codes` 用 `[\d.]+` 严格匹配百分比，导致**所有**
+  当日涨停股被过滤 → `hot_stocks=[]` → 跳过百度 PAE 反查 → UI 显示「百度 PAE ✗」。
+  - 修复：parser 改为只匹配「6 位代码 + 名称 + 冒号」，价格字段不强制；价格字段
+    渲染空值用 `-` 代替 `+%` 垃圾输出。
+  - 影响：板块轮动日报恢复 28 个概念板块 / 多只涨停股聚类。
+  - 新增 2 个回归测试覆盖无价格数据的当日行 + 老格式 `+%` 行。
+
+### Changed
+
+- **板块轮动 UI 重构（v0.2.13）**：将 `web/app.py` 内联的 sector tab 抽出为独立组件
+  `web/components/sector_panel.py`，不再直接渲染原始 `digest.markdown`。新 UI：
+  - **顶部工具栏**：搜索框（代码/名称/板块名）+ 「仅看 ≥N 只涨停」阀值（默认 3）；
+  - **3 源状态行**：`✓/✗` 展示东财 np-ipick / 同花顺 / 百度 PAE 健康度；
+  - **机构策略 expander**（顶部默认折叠）：Top 3 np-ipick 选股热度；
+  - **概念板块分组表格**：按股票数降序排，Top 3 板块默认展开，其余折叠；
+    表格列：代码 | 名称 | 题材 | 板块涨幅 | 操作；
+  - **[分析] 操作列**：每行可点击，2-step 跳转 analyze tab + 预填 ticker/日期
+    （如有正在运行的 tracker 则警告不跳转）；
+  - **降级路径**：`concept_blocks` 为空但 `hot_stocks` 有数据 → 平铺表；
+    全部为空 → `.bb-sector-empty` 空状态卡片。
+
+### Added
+
+- 新增 `web/components/sector_panel.py`（~190 行）+ 5 个 CSS class
+  `.bb-sector-toolbar` / `.bb-sector-meta(ok|fail)` /
+  `.bb-sector-block-header|stats` / `.bb-sector-empty`。
+- 新增 `tests/components/test_sector_panel.py`（49 个测试，覆盖率 86%）。
+
+## [0.2.12] — 2026-06-17
+
+### Added
+
+- **板块轮动日报（v0.2.12）**：侧边栏新增「🔄 板块轮动」按钮，一键生成 A 股当日
+  板块轮动快照，**不消耗 LLM token**。3 个数据源聚合：
+  1. **东财 np-ipick 选股热度 Top 20**（机构/编辑视角，按 `heatValue` 降序）；
+  2. **同花顺热股 + 题材归因**（人工编辑的 reason tags）；
+  3. **百度 PAE 概念反查**（涨停股 → 所属概念板块聚类，≥ 2 只涨停股的概念保留）。
+  输出 4 段式 Markdown：
+  - 一、机构/编辑视角（选股热度）；
+  - 二、强势概念板块（≥ 2 只涨停股的板块聚类 + 板块涨幅）；
+  - 三、龙头候选池（涨停股，按概念板块分组）；
+  - 四、个股涨停理由归因（同花顺 reason tags 列表）。
+- **新数据源**：东方财富 np-ipick（`https://np-ipick.eastmoney.com/recommend/stock/heat/ranking`），
+  走 v0.2.11 `_em_get()` 节流通道（不影响东财防封策略）。
+- **「游资追踪师」分析师升级**：tool 列表首位新增 `get_sector_rotation_digest`，
+  提示词要求「先调用 1 次板块轮动日报建立板块级基线，再下钻个股」。
+
+### Web UI
+
+- 侧边栏新增导航按钮「🔄 板块轮动」，新页面 `nav == "sector"`；
+- 「🔄 拉取最新」按钮可强制刷新（清除 `st.session_state.sector_digest_cache`）；
+- 加载 spinner：「正在拉取板块轮动数据,预计 15-25 秒...」；
+- **不消耗 LLM**：页面直接调用 `route_to_vendor("get_sector_rotation_digest", "", 20)`，
+  纯 HTTP 拉数 + Markdown 渲染。
+
+### Vendor Routing
+
+- `get_hot_strategy_ranking` / `get_sector_rotation_digest` 已注册到
+  `tradingagents/dataflows/interface.py` 的 `VENDOR_METHODS`，归属 `signal_data` 类别；
+- 对应 LangChain `@tool` 包装见 `tradingagents/agents/utils/signal_data_tools.py`，
+  `agent_utils.py` 已 import 这两个新工具供分析师链路使用。
+
+### Tested
+
+- 13 个单元测试（`tests/test_sector_rotation.py`），覆盖：
+  - `get_hot_strategy_ranking` 解析 / 排序 / 缺省日期 / 5xx 错误 / 空数据 / top_n 上限 50；
+  - `_extract_limitup_codes` 解析 THS 风格 Markdown；
+  - `_batch_reverse_concept_blocks` 10 只股票 = 1 次调用 / 20 只 = 2 次调用 / 过滤 < 2 只股票的概念；
+  - `get_sector_rotation_digest` 三源聚合 / 零涨停降级 / 单源失败优雅降级；
+- 新函数（`a_stock.py` 第 2062-2370 行）覆盖率 100%，全模块覆盖率 20%
+  （因 1108 行的 vendor 文件覆盖大量历史代码）。
+
+### Known Limitations
+
+- **不走 push2/push2his**：本日报采用「涨停股→PAE 反查」路径，**不**走
+  「行业→成分股」路径，原因是部分网络环境 push2/push2his 接口不稳定
+  （2026-06 验证：5 次本地请求 0 次成功）。np-ipick + THS + PAE 这条路
+  对 push2 不可用环境是更稳的兜底；
+- **每日缓存**：`sector_rotation_concept_v1.json` 缓存当天 PAE 反查结果，
+  跨日失效——同一天重复刷新 Web UI 按钮不重复请求 PAE；
+- **历史日期不支持**：`get_sector_rotation_digest(curr_date)` 当前
+  `curr_date` 仅作 header 显示用，不影响数据来源（实际仍是今日）。
+
+---
+
 ## [0.2.11] — 2026-05-30
 
 ### Changed
