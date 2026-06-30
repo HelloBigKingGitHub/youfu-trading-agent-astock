@@ -1,4 +1,4 @@
-"""Manage analysis history by scanning existing log files."""
+"""Manage analysis history using the unified history_store."""
 
 from __future__ import annotations
 
@@ -7,31 +7,41 @@ import re
 from pathlib import Path
 from typing import Any
 
+import sys
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
 
-def _results_dir() -> Path:
-    return Path.home() / ".tradingagents" / "logs"
+from backend.core.history_store import get_history_store
 
 
 def get_history() -> list[dict[str, str]]:
-    """Scan saved analysis logs and return a sorted list (newest first).
+    """Return history entries as dicts compatible with the Streamlit sidebar.
 
     Each entry: {"ticker": "300750", "date": "2026-05-12", "path": "/abs/path/...json"}
+    The 'path' points to the full_states_log_*.json for report viewing,
+    or to the history entry itself if no full results file exists.
     """
-    root = _results_dir()
-    if not root.exists():
-        return []
-
-    entries: list[dict[str, str]] = []
-    for log_file in root.rglob("full_states_log_*.json"):
-        match = re.search(r"full_states_log_(\d{4}-\d{2}-\d{2})\.json$", log_file.name)
-        if not match:
-            continue
-        date = match.group(1)
-        ticker = log_file.parent.parent.name
-        entries.append({"ticker": ticker, "date": date, "path": str(log_file)})
-
-    entries.sort(key=lambda e: e["date"], reverse=True)
-    return entries
+    store = get_history_store()
+    entries, _ = store.list_all(limit=100, offset=0)
+    results: list[dict[str, str]] = []
+    for e in entries:
+        path = e.results_path
+        if not path or not Path(path).exists():
+            # Fallback: try to find the full_states_log file
+            log_root = Path.home() / ".tradingagents" / "logs"
+            ticker_dir = log_root / e.ticker
+            fallback = ticker_dir / "TradingAgentsStrategy_logs" / f"full_states_log_{e.trade_date}.json"
+            path = str(fallback) if fallback.exists() else ""
+        results.append({
+            "ticker": e.ticker,
+            "date": e.trade_date,
+            "path": path,
+            "status": e.status,
+            "signal": e.signal,
+            "elapsed": e.elapsed,
+            "analysis_id": e.analysis_id,
+        })
+    return results
 
 
 def load_analysis(path: str) -> dict[str, Any]:

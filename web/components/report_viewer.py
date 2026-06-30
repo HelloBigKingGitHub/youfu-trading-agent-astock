@@ -14,13 +14,13 @@ def _strip_think(text: str) -> str:
     return re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
 
 
-def _signal_style(signal: str) -> tuple[str, str]:
+def _signal_class(signal: str) -> tuple[str, str]:
     s = signal.upper()
     if "BUY" in s:
-        return "#22c55e", "买入"
+        return "bb-trading-signal bb-trading-signal--buy", "买入"
     if "SELL" in s:
-        return "#ef4444", "卖出"
-    return "#fbbf24", "持有"
+        return "bb-trading-signal bb-trading-signal--sell", "卖出"
+    return "bb-trading-signal bb-trading-signal--hold", "持有"
 
 
 _ANALYST_SECTIONS = [
@@ -43,34 +43,22 @@ def render_report(
 ) -> None:
     """Render the full analysis report."""
 
-    color, cn_signal = _signal_style(signal)
+    cls, cn_signal = _signal_class(signal)
 
     stats_html = ""
     if elapsed is not None:
         m, s = divmod(int(elapsed), 60)
-        stats_html = f'<div style="font-size:0.9rem; color:#888; margin-top:0.3rem;">耗时 {m}:{s:02d}</div>'
+        stats_html = f'<div class="bb-trading-signal-elapsed">耗时 {m}:{s:02d}</div>'
 
-    st.markdown(
+    st.html(
         f"""
-        <div style="
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            border: 1px solid #333;
-            border-radius: 16px;
-            padding: 2rem;
-            text-align: center;
-            margin: 1rem 0 2rem;
-        ">
-            <div style="font-size:0.9rem; color:#888; letter-spacing:2px;">TRADING SIGNAL</div>
-            <div style="font-size:3.5rem; font-weight:900; color:{color}; margin:0.3rem 0;">
-                {signal.upper()}
-            </div>
-            <div style="font-size:1.2rem; color:#f5f1eb;">
-                {ticker} · {trade_date}
-            </div>
+        <div class="{cls}">
+            <div class="bb-trading-signal-eyebrow">TRADING SIGNAL</div>
+            <div class="bb-trading-signal-value">{signal.upper()}</div>
+            <div class="bb-trading-signal-ticker">{ticker} <span class="bb-trading-signal-sep">·</span> {trade_date}</div>
             {stats_html}
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
     st.caption("⚠️ 本报告由 AI 自动生成，仅供学习研究，不构成投资建议。")

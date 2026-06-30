@@ -4,9 +4,20 @@ from __future__ import annotations
 
 import re
 import threading
+import time
+import uuid
+from pathlib import Path
 from typing import Any
 
+import sys
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
+
+from backend.core.history_store import get_history_store
 from web.progress import PIPELINE_STAGES, ProgressTracker
+
+_history_store = get_history_store()
+_RESULTS_DIR = Path.home() / ".tradingagents" / "logs"
 
 
 _REPORT_KEY_TO_STAGE = {s["report_key"]: s["id"] for s in PIPELINE_STAGES}
@@ -67,7 +78,7 @@ def _infer_active_stage(tracker: ProgressTracker) -> None:
             return
 
 
-def _run(ticker: str, trade_date: str, config: dict, tracker: ProgressTracker) -> None:
+def _run(ticker: str, trade_date: str, config: dict, tracker: ProgressTracker, analysis_id: str) -> None:
     """Execute the full pipeline in the current thread."""
     from cli.stats_handler import StatsCallbackHandler
     from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -100,6 +111,18 @@ def _run(ticker: str, trade_date: str, config: dict, tracker: ProgressTracker) -
 
     tracker.mark_complete(last_chunk, signal)
 
+    # Save "completed" history entry via unified store
+    elapsed = time.time() - tracker.start_time
+    _history_store.mark_complete(
+        analysis_id,
+        signal=signal,
+        elapsed=elapsed,
+        completed_stages=list(tracker.completed_stages),
+    )
+    # Set the results path so report viewer can find the full log
+    results_path = str(_RESULTS_DIR / ticker / "TradingAgentsStrategy_logs" / f"full_states_log_{trade_date}.json")
+    _history_store.set_results_path(analysis_id, results_path)
+
 
 def run_analysis_in_thread(
     ticker: str,
@@ -113,11 +136,19 @@ def run_analysis_in_thread(
     tracker.is_running = True
     tracker.mark_stage_active("market")
 
+    # Create history entry via unified store
+    entry = _history_store.create(ticker, trade_date, status="running")
+    analysis_id = entry.analysis_id
+    tracker.analysis_id = analysis_id
+
     def _target() -> None:
+        start = time.time()
         try:
-            _run(ticker, trade_date, config, tracker)
+            _run(ticker, trade_date, config, tracker, analysis_id)
         except Exception as exc:
             tracker.mark_error(str(exc))
+            elapsed = time.time() - start
+            _history_store.mark_error(analysis_id, str(exc), elapsed=elapsed)
 
     t = threading.Thread(target=_target, daemon=True)
     t.start()

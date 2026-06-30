@@ -9,10 +9,10 @@ from web.progress import PIPELINE_STAGES, ProgressTracker
 
 def _status_badge(status: str) -> str:
     if status == "done":
-        return '<span style="color:#22c55e; font-size:1.3rem;">●</span>'
+        return '<span class="bb-stage-badge bb-stage-badge--done">●</span>'
     if status == "active":
-        return '<span style="color:#ff5a1f; font-size:1.3rem;">◉</span>'
-    return '<span style="color:#333; font-size:1.3rem;">○</span>'
+        return '<span class="bb-stage-badge bb-stage-badge--active">◉</span>'
+    return '<span class="bb-stage-badge bb-stage-badge--pending">○</span>'
 
 
 def _format_time(seconds: float) -> str:
@@ -23,18 +23,13 @@ def _format_time(seconds: float) -> str:
 def render_progress(tracker: ProgressTracker) -> None:
     """Render the pipeline progress panel."""
 
-    st.markdown(
+    st.html(
         f"""
-        <div style="text-align:center; margin:1rem 0 0.5rem;">
-            <span style="font-size:1.6rem; font-weight:700; color:#f5f1eb;">
-                分析进行中
-            </span>
-            <span style="font-size:1.1rem; color:#888; margin-left:0.8rem;">
-                {tracker.ticker}
-            </span>
+        <div class="bb-progress-title">
+            <span class="bb-progress-title-text">分析进行中</span>
+            <span class="bb-progress-ticker">{tracker.ticker}</span>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
     completed = len(tracker.completed_stages)
@@ -45,44 +40,36 @@ def render_progress(tracker: ProgressTracker) -> None:
     analyst_stages = PIPELINE_STAGES[:7]
     post_stages = PIPELINE_STAGES[7:]
 
-    st.markdown(
-        '<div style="margin:0.5rem 0 0.3rem; font-size:0.85rem; color:#888;">ANALYSTS</div>',
-        unsafe_allow_html=True,
-    )
+    st.html('<div class="bb-section-label">ANALYSTS</div>')
 
     cols = st.columns(len(analyst_stages))
     for col, stage in zip(cols, analyst_stages):
         status = tracker.stage_status(stage["id"])
         badge = _status_badge(status)
-        label_color = "#f5f1eb" if status == "active" else "#888" if status == "pending" else "#22c55e"
-        col.markdown(
+        label_cls = "bb-stage-label bb-stage-label--active" if status == "active" else "bb-stage-label bb-stage-label--pending" if status == "pending" else "bb-stage-label bb-stage-label--done"
+        col.html(
             f"""
-            <div style="text-align:center; padding:0.5rem 0;">
+            <div class="bb-stage-cell">
                 {badge}<br>
-                <span style="font-size:0.75rem; color:{label_color};">{stage['name']}</span>
+                <span class="{label_cls}">{stage['name']}</span>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
-    st.markdown(
-        '<div style="margin:0.8rem 0 0.3rem; font-size:0.85rem; color:#888;">PIPELINE</div>',
-        unsafe_allow_html=True,
-    )
+    st.html('<div class="bb-section-label">PIPELINE</div>')
 
     cols2 = st.columns(len(post_stages))
     for col, stage in zip(cols2, post_stages):
         status = tracker.stage_status(stage["id"])
         badge = _status_badge(status)
-        label_color = "#f5f1eb" if status == "active" else "#888" if status == "pending" else "#22c55e"
-        col.markdown(
+        label_cls = "bb-stage-label bb-stage-label--lg bb-stage-label--active" if status == "active" else "bb-stage-label bb-stage-label--lg bb-stage-label--pending" if status == "pending" else "bb-stage-label bb-stage-label--lg bb-stage-label--done"
+        col.html(
             f"""
-            <div style="text-align:center; padding:0.5rem 0;">
+            <div class="bb-stage-cell">
                 {badge}<br>
-                <span style="font-size:0.75rem; color:{label_color};">{stage['name']}</span>
+                <span class="{label_cls}">{stage['name']}</span>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
     st.markdown("---")
@@ -103,11 +90,7 @@ def render_progress(tracker: ProgressTracker) -> None:
     ]
 
     if completed_reports:
-        st.markdown(
-            '<div style="margin:0.5rem 0 0.3rem; font-size:0.85rem; color:#888;">'
-            f"REPORTS ({len(completed_reports)})</div>",
-            unsafe_allow_html=True,
-        )
+        st.html(f'<div class="bb-section-label">REPORTS ({len(completed_reports)})</div>')
         for name, icon, report in reversed(completed_reports):
             is_latest = (name == completed_reports[-1][0])
             with st.expander(f"{icon} {name}", expanded=is_latest):

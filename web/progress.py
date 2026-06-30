@@ -30,6 +30,7 @@ STAGE_IDS = [s["id"] for s in PIPELINE_STAGES]
 class ProgressTracker:
     """Mutable state container updated by the runner thread, read by the UI."""
 
+    analysis_id: str = ""
     ticker: str = ""
     trade_date: str = ""
     start_time: float = field(default_factory=time.time)
