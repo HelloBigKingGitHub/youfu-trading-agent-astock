@@ -1,12 +1,12 @@
-# TradingAgents-Astock
+# Youfu-Trading-Agent-Astock
 
 ## 项目概述
 基于 [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents)（65K Stars）的 A 股深度特化 fork。多 Agent 投研框架，7 个 Analyst 角色通过 Bull/Bear 辩论 + 三方风险辩论生成投资报告。
 
-- **仓库**: https://github.com/simonlin1212/TradingAgents-astock
+- **仓库**: https://github.com/HelloBigKingGitHub/youfu-trading-agent-astock
 - **协议**: Apache 2.0
 - **Python**: >=3.10
-- **当前版本**: 0.2.11
+- **当前版本**: 0.2.14
 
 ## 架构
 
@@ -22,15 +22,17 @@
 | 同花顺 10jqka | HTTP | EPS 一致预期、热股题材 |
 | 财联社 cls.cn | HTTP | 全球财经快讯 |
 | 百度股市通 | HTTP (gushitong.baidu) | 概念板块归属（资金流已迁移至东财push2） |
+| 东方财富 np-ipick | HTTP | 选股热度排名（板块轮动日报用） |
 
-### Agent 角色（7 个）
-原版 4 个（市场/情绪/新闻/基本面）+ A 股特化 3 个（政策分析师/游资追踪/解禁监控）
+### Agent 角色（7 个 + 板块轮动日报）
+原版 4 个（市场/情绪/新闻/基本面）+ A 股特化 3 个（政策分析师/游资追踪/解禁监控）+ **v0.2.12 新增「板块轮动日报」**（侧边栏按钮直接调用 `get_sector_rotation_digest`，不走 LangGraph 也不消耗 LLM token）：东财 np-ipick 选股热度 + 同花顺涨停归因 + 百度 PAE 概念反查 → 4 段式 Markdown。
 
 ### 关键路径
 - `tradingagents/dataflows/a_stock.py` — A 股数据 vendor，所有数据获取入口
 - `tradingagents/dataflows/utils.py` — `safe_ticker_component` 路径安全校验 + 中文 ticker 自动解析
 - `tradingagents/agents/` — 7 个 Analyst + Bull/Bear 辩论逻辑
-- `web/` — Streamlit Web UI
+- `web/app.py` — Streamlit Web UI 入口
+- `web/components/sector_panel.py` — v0.2.13 板块轮动 UI（独立组件，依赖 `SectorRotationDigest`）
 - `cli/` — CLI 入口
 
 ### 中文股票名解析链路
@@ -48,7 +50,10 @@ v0.2.5 起完全移除 akshare 依赖，所有数据通过直连 HTTP API 获取
 `fundsortlist` 和 `fundflow` 两个接口返回空（2026-05-19 确认）。v0.2.7 已替换为东财 push2 资金流 API。同时修复了 `RPT_ORGANIZATION_BUSSINESS`（改用席位筛选机构）和东财全球资讯 `req_trace` 参数。
 
 ### 东财接口防封限流（v0.2.11 新增，移植自 a-stock-data v3.2）
-`a_stock.py` 里所有指向 `eastmoney.com` 的请求（push2 / push2his / datacenter-web / search-api / np-weblist 共 7 个调用点）统一走节流入口 `_em_get()`：模块级时间戳串行限流（默认间隔 `EM_MIN_INTERVAL=1.0s`，可用同名环境变量覆盖）+ 0.1~0.5s 随机抖动 + 复用 `requests.Session`（Keep-Alive）+ 默认 UA。多 Agent 跑批量分析不再触发东财临时封 IP。**仅东财限流**——mootdx(TCP) / 腾讯 / 新浪 / 同花顺 / 财联社 / 百度 等非东财源不受影响。批量场景可设 `EM_MIN_INTERVAL=1.5~2` 进一步降速。新增东财端点时务必走 `_em_get` 而非裸 `requests.get`。
+`a_stock.py` 里所有指向 `eastmoney.com` 的请求（push2 / push2his / datacenter-web / search-api / np-weblist / np-ipick 共 8 个调用点）统一走节流入口 `_em_get()`：模块级时间戳串行限流（默认间隔 `EM_MIN_INTERVAL=1.0s`，可用同名环境变量覆盖）+ 0.1~0.5s 随机抖动 + 复用 `requests.Session`（Keep-Alive）+ 默认 UA。多 Agent 跑批量分析不再触发东财临时封 IP。**仅东财限流**——mootdx(TCP) / 腾讯 / 新浪 / 同花顺 / 财联社 / 百度 等非东财源不受影响。批量场景可设 `EM_MIN_INTERVAL=1.5~2` 进一步降速。新增东财端点时务必走 `_em_get` 而非裸 `requests.get`。
+
+### 板块轮动日报 v0.2.12 局限
+「板块轮动日报」采用「涨停股→百度 PAE 反查→概念板块聚类」路径（不是「行业→成分股」），因为部分网络环境 push2/push2his 不稳定（2026-06 验证：5 次本地请求 0 次成功）。本变体绕开 push2 走 np-ipick 选股热度 + THS 涨停归因 + 百度 PAE 反查，单次 15-25s 即可生成 4 段式 Markdown；属于 push2 不可用环境的兜底方案。如 push2 恢复，v0.3 可叠加「行业涨幅 Top N + 资金净流入 Top N」段落。
 
 ### 模型兼容性
 deepseek-v4-flash 等模型在 tool call 时可能返回中文股票名而非 6 位代码。`safe_ticker_component` 已加兜底自动转码，但不同模型表现仍有差异。
@@ -66,5 +71,4 @@ deepseek-v4-flash 等模型在 tool call 时可能返回中文股票名而非 6 
 - Web UI 改动在 `web/` 目录，用 `streamlit run web/launch.py` 本地测试
 
 ## 相关项目
-- [a-stock-data](https://github.com/simonlin1212/a-stock-data) — A 股 MCP 数据服务（Claude Code 用的 skill）
 - 上游 [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) — 原版框架
