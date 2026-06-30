@@ -575,6 +575,22 @@ section[data-testid="stSidebar"] {
     margin-bottom: 0.2rem;
 }
 
+/* Mini status row inside the sidebar form (running / complete / errored) */
+.bb-sidebar-status {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    margin: 8px 0 6px;
+    letter-spacing: 0.04em;
+    font-weight: 500;
+}
+.bb-sidebar-status--running  { color: var(--bb-accent-bright); }
+.bb-sidebar-status--complete { color: var(--bb-up); }
+.bb-sidebar-status--error    { color: var(--bb-down); }
+.st-key-sidebar_form_container [data-testid="stProgress"] > div > div > div {
+    background: var(--bb-accent) !important;
+}
+
 /* History list items */
 .bb-sidebar-history-item {
     display: flex;

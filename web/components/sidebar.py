@@ -10,6 +10,7 @@ import streamlit as st
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
 from web._signal_helpers import signal_badge
 from web.history import get_history
+from web.progress import STAGE_IDS
 
 # Provider display names in recommended order
 _PROVIDERS: list[tuple[str, str]] = [
@@ -206,56 +207,71 @@ def _render_history_entry(entry: dict) -> None:
         st.rerun()
 
 
+def _render_sidebar_status(tracker) -> None:
+    """Render a compact status row inside the sidebar form. No-op when idle."""
+    if tracker is None:
+        return
+    if tracker.is_running:
+        completed = len(tracker.completed_stages)
+        total = max(len(STAGE_IDS), 1)
+        pct = min(int(completed * 100 / total), 99)
+        st.html(f'<div class="bb-sidebar-status bb-sidebar-status--running">🟡 进度 {pct}%</div>')
+        st.progress(min(completed / total, 0.99))
+    elif tracker.is_complete:
+        ticker_esc = html.escape(tracker.ticker)
+        st.html(f'<div class="bb-sidebar-status bb-sidebar-status--complete">✅ 完成 · {ticker_esc}</div>')
+    elif tracker.error:
+        st.html('<div class="bb-sidebar-status bb-sidebar-status--error">❌ 失败</div>')
+
+
 def render_sidebar() -> None:
     """Render the new-analysis form, history list, and disclaimer."""
 
-    st.html(
-        """
-        <div class="bb-sidebar-form-box">
-            <div class="bb-sidebar-section-label">新建分析</div>
-        </div>
-        """
-    )
+    with st.container(key="sidebar_form_container"):
+        st.html('<div class="bb-sidebar-section-label">新建分析</div>')
 
-    ticker = st.text_input(
-        "股票代码",
-        placeholder="例: 300750 或 宁德时代",
-        key="input_ticker",
-        label_visibility="collapsed",
-        help="输入6位A股代码或中文股票全称",
-    )
+        ticker = st.text_input(
+            "股票代码",
+            placeholder="例: 300750 或 宁德时代",
+            key="input_ticker",
+            label_visibility="collapsed",
+            help="输入6位A股代码或中文股票全称",
+        )
 
-    trade_date = st.date_input(
-        "分析日期",
-        value=date.today(),
-        key="input_date",
-    )
+        trade_date = st.date_input(
+            "分析日期",
+            value=date.today(),
+            key="input_date",
+        )
 
-    with st.expander(f"⚙️  模型配置  ·  {_current_model_label()}", expanded=False):
-        _render_llm_config()
+        tracker = st.session_state.get("tracker")
+        _render_sidebar_status(tracker)
 
-    tracker = st.session_state.get("tracker")
-    is_busy = tracker is not None and tracker.is_running
+        with st.expander(f"⚙️  模型配置  ·  {_current_model_label()}", expanded=False):
+            _render_llm_config()
 
-    if st.button(
-        "开始分析" if not is_busy else "分析进行中...",
-        use_container_width=True,
-        disabled=is_busy or not ticker,
-        type="primary",
-        key="sidebar_start_analysis",
-    ):
-        resolved_code, err = _resolve_user_input(ticker)
-        if err:
-            st.error(f"❌ {err}")
-        else:
-            if resolved_code != ticker.strip():
-                st.success(f"✅ {ticker.strip()} → {resolved_code}")
-        st.session_state["start_analysis"] = {
-            "ticker": resolved_code,
-            "trade_date": trade_date.strftime("%Y-%m-%d"),
-        }
-        st.session_state["viewing_history"] = None
-        st.rerun()
+        is_busy = tracker is not None and tracker.is_running
+        button_label = "⏳ 分析进行中..." if is_busy else "🚀 开始分析"
+
+        if st.button(
+            button_label,
+            use_container_width=True,
+            disabled=is_busy or not ticker,
+            type="primary",
+            key="sidebar_start_analysis",
+        ):
+            resolved_code, err = _resolve_user_input(ticker)
+            if err:
+                st.error(f"❌ {err}")
+            else:
+                if resolved_code != ticker.strip():
+                    st.success(f"✅ {ticker.strip()} → {resolved_code}")
+            st.session_state["start_analysis"] = {
+                "ticker": resolved_code,
+                "trade_date": trade_date.strftime("%Y-%m-%d"),
+            }
+            st.session_state["viewing_history"] = None
+            st.rerun()
 
     history = get_history()
     count = len(history)
