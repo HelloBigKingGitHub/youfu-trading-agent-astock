@@ -159,7 +159,7 @@ def render_sidebar_logo() -> None:
             </div>
             <div class="bb-logo-divider"></div>
             <div class="bb-logo-author">
-                by <a class="bb-logo-author-link" href="https://github.com/simonlin1212" target="_blank" rel="noopener">{github_icon}<span>simonlin1212</span></a>
+                by <a class="bb-logo-author-link" href="https://github.com/simonlin1212" target="_blank" rel="noopener">{github_icon}<span>有富</span></a>
             </div>
         </div>
         """
