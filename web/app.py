@@ -221,16 +221,14 @@ def _render_analysis_form() -> None:
 
 
 def _render_idle_screen() -> None:
-    """Render the new-analysis form + welcome hero + 4 recent analysis cards + disclaimer.
+    """Render the welcome hero + new-analysis form + 4 recent analysis cards + disclaimer.
 
     Layout (top → bottom):
-      1. New-analysis form (the primary CTA — start here)
-      2. Welcome hero
+      1. Welcome hero (TRADINGAGENTS-ASTOCK title acts as the page heading)
+      2. New-analysis form (the primary CTA — start here)
       3. 4 recent-analysis cards
       4. Bottom disclaimer
     """
-    _render_analysis_form()
-
     st.markdown(
         """
         <div class="bb-hero">
@@ -245,6 +243,8 @@ def _render_idle_screen() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+    _render_analysis_form()
 
     try:
         _render_recent_analyses()
