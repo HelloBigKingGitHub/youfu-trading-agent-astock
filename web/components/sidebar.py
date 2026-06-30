@@ -165,6 +165,25 @@ def render_sidebar_logo() -> None:
     )
 
 
+def _sort_history(history: list, sort_by: str) -> list:
+    """Sort history entries by the given criteria. Returns a new list."""
+    if sort_by == "最新":
+        return list(history)
+    if sort_by == "最旧":
+        return list(reversed(history))
+    if sort_by == "Ticker A-Z":
+        return sorted(history, key=lambda h: h.get("ticker", ""))
+    if sort_by == "Ticker Z-A":
+        return sorted(history, key=lambda h: h.get("ticker", ""), reverse=True)
+    if sort_by == "Bull first":
+        order = {"BUY": 0, "OVERWEIGHT": 0, "LONG": 0, "HOLD": 1, "SELL": 2, "UNDERWEIGHT": 2, "SHORT": 2}
+        return sorted(history, key=lambda h: order.get((h.get("signal", "") or "").upper(), 3))
+    if sort_by == "Bear first":
+        order = {"SELL": 0, "UNDERWEIGHT": 0, "SHORT": 0, "HOLD": 1, "BUY": 2, "OVERWEIGHT": 2, "LONG": 2}
+        return sorted(history, key=lambda h: order.get((h.get("signal", "") or "").upper(), 3))
+    return list(history)
+
+
 def _render_history_entry(entry: dict) -> None:
     """Render one sidebar history row as a ticker + date + signal badge.
 
@@ -274,25 +293,51 @@ def render_sidebar() -> None:
             st.rerun()
 
     history = get_history()
-    count = len(history)
-    st.html(
-        f"""
-        <div class="bb-sidebar-section-header">
-            <span class="bb-sidebar-section-label">历史记录</span>
-            <span class="bb-sidebar-count">{count}</span>
-        </div>
-        """
-    )
+    total = len(history)
 
-    if not history:
+    with st.container(key="sidebar_history_container"):
         st.html(
-            """
-            <div class="bb-sidebar-empty">暂无历史记录</div>
-            """
+            f'<div class="bb-section-label">历史记录 '
+            f'<span class="bb-section-label-count">({total})</span></div>'
         )
-    else:
-        for entry in history[:20]:
-            _render_history_entry(entry)
+
+        search_query = st.text_input(
+            "🔍",
+            placeholder="搜索 ticker (如 600595)",
+            key="sidebar_history_search",
+            label_visibility="collapsed",
+        )
+        sort_by = st.selectbox(
+            "排序",
+            ["最新", "最旧", "Ticker A-Z", "Ticker Z-A", "Bull first", "Bear first"],
+            key="sidebar_history_sort",
+            label_visibility="collapsed",
+        )
+
+        if not history:
+            st.html('<div class="bb-sidebar-empty">暂无历史记录</div>')
+        else:
+            filtered = [
+                h for h in history
+                if not search_query or search_query.upper() in h.get("ticker", "").upper()
+            ]
+            sorted_list = _sort_history(filtered, sort_by)
+
+            if not sorted_list:
+                st.html('<div class="bb-sidebar-empty">无匹配记录</div>')
+            else:
+                with st.container(key="sidebar_history_list"):
+                    for entry in sorted_list[:20]:
+                        _render_history_entry(entry)
+
+                if len(sorted_list) > 20:
+                    if st.button(
+                        "查看全部 →",
+                        key="view_all_history",
+                        use_container_width=True,
+                    ):
+                        st.session_state["nav"] = "history"
+                        st.rerun()
 
     st.html(
         """

@@ -702,6 +702,55 @@ section[data-testid="stSidebar"] {
     border-top: 1px solid var(--border-1);
 }
 
+/* ── Sidebar history box (search + sort + list, v0.2.13) ──
+   Single contained card that holds the history section label, search input,
+   sort dropdown, and scrollable list. Sits between the nav buttons card and
+   the bottom disclaimer. */
+.st-key-sidebar_history_container {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-md);
+    padding: 12px;
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-sm);
+}
+
+/* Scrollable inner list (the section label, search input and sort dropdown
+   stay pinned at the top of the box; only the entries scroll). */
+.st-key-sidebar_history_list {
+    max-height: 360px;
+    overflow-y: auto;
+    padding-right: 2px;
+    margin-top: 4px;
+}
+.st-key-sidebar_history_list::-webkit-scrollbar { width: 4px; }
+.st-key-sidebar_history_list::-webkit-scrollbar-track { background: transparent; }
+.st-key-sidebar_history_list::-webkit-scrollbar-thumb {
+    background: var(--border-2);
+    border-radius: 2px;
+}
+.st-key-sidebar_history_list::-webkit-scrollbar-thumb:hover {
+    background: var(--bb-accent-dim);
+}
+
+/* History section label + count badge (reuses .bb-section-label from progress
+   panel; adds a tertiary-coloured count badge inline next to the title). */
+.bb-section-label-count {
+    color: var(--text-tertiary);
+    font-weight: 400;
+    margin-left: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.04em;
+}
+
+/* Tighten widget margins inside the history box so it stays compact. */
+.st-key-sidebar_history_container [data-testid="stTextInputRootElement"],
+.st-key-sidebar_history_container [data-testid="stSelectbox"] {
+    margin-top: 0;
+    margin-bottom: 8px;
+}
+
 /* ── Sidebar nav section grouping ──────────
    The 4 nav buttons (analyze/sector/history/settings) are rendered by
    app.py via _render_nav_buttons(). Rather than change that function,
