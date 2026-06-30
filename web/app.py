@@ -91,39 +91,13 @@ def _load_code_to_name() -> dict[str, str]:
     return st.session_state.get("_code_name_map") or {}
 
 
-def _kick_off_code_name_loader() -> None:
-    """Fire-and-forget thread that warms the code→name cache.
-
-    Imported and started once at app start. Populates
-    ``st.session_state['_code_name_map']`` when mootdx responds in time;
-    on timeout / error it writes ``{}``. The thread is daemon=True so it
-    never blocks process shutdown.
-    """
-    if st.session_state.get("_code_name_map_started"):
-        return
-    st.session_state["_code_name_map_started"] = True
-
-    import threading
-
-    def _worker() -> None:
-        try:
-            from tradingagents.dataflows.a_stock import _build_name_code_map
-
-            _, code_to_name = _build_name_code_map()
-            st.session_state["_code_name_map"] = code_to_name or {}
-        except BaseException:
-            st.session_state["_code_name_map"] = {}
-
-    threading.Thread(target=_worker, daemon=True).start()
-
-
-# Kick off the code→Chinese-name cache loader as a fire-and-forget daemon.
-# The lookup itself requires mootdx's TCP connect (can block ~2s) plus an
-# import of tradingagents.dataflows.a_stock which has been observed to
-# deadlock the Streamlit script runner when first imported from a worker.
-# We start it once per process and let it populate
-# ``st.session_state['_code_name_map']`` for the cards to consume later.
-_kick_off_code_name_loader()
+# Note: the original _kick_off_code_name_loader() (which spawns a daemon
+# thread to warm the mootdx code→name cache) is intentionally NOT called at
+# module top level. In practice the import inside the worker thread deadlocks
+# the Streamlit script runner when mootdx's TCP server is unreachable
+# (TimeoutError but the import itself blocks). Leaving the helper defined
+# for reference but unused; the render path tolerates an empty cache by
+# showing "—" for the Chinese name.
 
 
 def _render_recent_analyses() -> None:
@@ -248,8 +222,10 @@ def _render_analysis_form() -> None:
 
 def _render_idle_screen() -> None:
     """Render the new-analysis form + welcome hero + 4 recent analysis cards + disclaimer."""
-
-    _render_recent_analyses()
+    try:
+        _render_recent_analyses()
+    except Exception as exc:
+        st.warning(f"最近分析加载异常: {exc}")
 
     _render_analysis_form()
 
@@ -268,15 +244,17 @@ def _render_idle_screen() -> None:
         unsafe_allow_html=True,
     )
 
-
-    st.html(
-        """
-        <div class="bb-disclaimer">
-            ⚠️ 本项目仅供学习研究与技术演示，不构成任何投资建议。<br>
-            投资决策请咨询持牌专业机构。作者不对使用本工具产生的任何损失承担责任。
-        </div>
-        """
-    )
+    try:
+        st.html(
+            """
+            <div class="bb-disclaimer">
+                ⚠️ 本项目仅供学习研究与技术演示，不构成任何投资建议。<br>
+                投资决策请咨询持牌专业机构。作者不对使用本工具产生的任何损失承担责任。
+            </div>
+            """
+        )
+    except Exception:
+        pass
 
 
 # ── Sidebar nav (4 buttons: analyze / sector / history / settings) ─────────
