@@ -42,6 +42,8 @@ from .a_stock import (
     get_dragon_tiger_board as get_astock_dragon_tiger_board,
     get_lockup_expiry as get_astock_lockup_expiry,
     get_industry_comparison as get_astock_industry_comparison,
+    get_hot_strategy_ranking as get_astock_hot_strategy_ranking,
+    get_sector_rotation_digest as get_astock_sector_rotation_digest,
 )
 
 # Configuration and routing logic
@@ -89,6 +91,8 @@ TOOLS_CATEGORIES = {
             "get_dragon_tiger_board",
             "get_lockup_expiry",
             "get_industry_comparison",
+            "get_hot_strategy_ranking",
+            "get_sector_rotation_digest",
         ]
     }
 }
@@ -174,6 +178,12 @@ VENDOR_METHODS = {
     },
     "get_industry_comparison": {
         "a_stock": get_astock_industry_comparison,
+    },
+    "get_hot_strategy_ranking": {
+        "a_stock": get_astock_hot_strategy_ranking,
+    },
+    "get_sector_rotation_digest": {
+        "a_stock": get_astock_sector_rotation_digest,
     },
 }
 

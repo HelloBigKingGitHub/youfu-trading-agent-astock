@@ -15,6 +15,7 @@ Data sources:
 from __future__ import annotations
 
 from typing import Annotated
+from dataclasses import dataclass
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import json as _json
@@ -26,6 +27,7 @@ import re as _re
 import time
 import uuid
 import urllib.request
+import urllib.parse
 
 import pandas as pd
 import requests as _requests
@@ -80,6 +82,16 @@ def _build_name_code_map() -> tuple[dict[str, str], dict[str, str]]:
     global _name_to_code, _code_to_name
     if _name_to_code is not None:
         return _name_to_code, _code_to_name
+
+    # Pre-seed BESTIP so Quotes.factory() doesn't fail with
+    # "not enough values to unpack" when bestip check_server returns nothing.
+    from mootdx import config as _mootdx_config
+    if not _mootdx_config.get("BESTIP", {}).get("HQ"):
+        _srv = _mootdx_config.get("SERVER", {}).get("HQ", [])
+        if _srv:
+            # _srv[0] is ("深圳双线主站1", "110.41.147.114", 7709)
+            # config expects (ip, port) tuple without the name
+            _mootdx_config.set("BESTIP", {"HQ": _srv[0][1:]})
 
     from mootdx.quotes import Quotes
 
@@ -1361,10 +1373,19 @@ def get_hot_stocks(
             chengjiaoe = row.get("chengjiaoe", "")
             dde = row.get("ddejingliang", "")
 
+            # Current-day rows sometimes have None/empty price fields before
+            # THS finalizes the data. Show '-' instead of 'None'/'+%' garbage.
+            def _fmt(v: object, suffix: str = "") -> str:
+                if v is None or v == "":
+                    return "-"
+                return f"{v}{suffix}"
+
             lines.append(
-                f"{code} {name}: +{zhangfu}% "
-                f"换手{huanshou}% 成交额{chengjiaoe} "
-                f"大单净量{dde} | {reason}"
+                f"{code} {name}: "
+                f"+{_fmt(zhangfu, '%')} "
+                f"换手{_fmt(huanshou, '%')} "
+                f"成交额{_fmt(chengjiaoe)} "
+                f"大单净量{_fmt(dde)} | {reason}"
             )
 
             if reason:
@@ -2019,3 +2040,408 @@ def get_industry_comparison(
         lines.append(f"行业对比查询失败: {e}")
 
     return "\n".join(lines)
+
+
+# ---- 18. Sector rotation digest ----
+
+
+@dataclass(frozen=True)
+class SectorRotationDigest:
+    """Structured output of get_sector_rotation_digest.
+
+    Attributes:
+        hot_strategies: Top-N hot stock-picking strategies from np-ipick, sorted by heatValue desc.
+            Each entry: {rank, question, heatValue, market, code, chg}.
+        hot_stocks: Top-N same-day limit-up stocks from 同花顺.
+            Each entry: {code, name, reason, zhangfu, huanshou, chengjiaoe, ddejingliang}.
+        concept_blocks: Map of concept-block-name -> list of limit-up stocks in that block.
+            Only blocks with >= 2 limit-up stocks are included.
+        markdown: Pre-rendered Markdown digest for direct UI/human consumption.
+        sources_ok: Map of source-name -> bool indicating whether each data source
+            succeeded. Used by callers to surface partial-failure gracefully.
+    """
+
+    hot_strategies: list[dict]
+    hot_stocks: list[dict]
+    concept_blocks: dict[str, list[dict]]
+    markdown: str
+    sources_ok: dict[str, bool]
+
+
+def _fetch_hot_strategy_data(curr_date: str, top_n: int) -> list[dict]:
+    """Fetch + parse np-ipick heat ranking, returning structured dicts.
+
+    Returns a list of {rank, heatValue, chg, question} dicts sorted by heatValue desc.
+    Raises on any error so callers can surface a specific failure message per the
+    sector-rotation-digest spec scenario "Eastmoney HTTP failure".
+    """
+    url = "https://np-ipick.eastmoney.com/recommend/stock/heat/ranking"
+    params = {
+        "count": str(top_n),
+        "trace": str(int(time.time())),
+        "client": "web",
+        "biz": "web_smart_tag",
+    }
+    headers = {
+        "User-Agent": _UA,
+        "Referer": "https://xuangu.eastmoney.com/",
+        "Origin": "https://xuangu.eastmoney.com",
+    }
+    r = _em_get(url, params=params, headers=headers, timeout=15)
+    d = r.json()
+
+    if d.get("code") != 1 or not d.get("data"):
+        return []
+
+    rows = sorted(d["data"], key=lambda x: x.get("heatValue", 0), reverse=True)
+    result = []
+    for row in rows[:top_n]:
+        chg = row.get("chg", 0)
+        chg_str = f"{chg*100:+.2f}%" if isinstance(chg, (int, float)) else str(chg)
+        result.append(
+            {
+                "rank": row.get("rank", "-"),
+                "heatValue": row.get("heatValue", 0),
+                "chg": chg_str,
+                "question": row.get("question", ""),
+            }
+        )
+    return result
+
+
+def get_hot_strategy_ranking(
+    curr_date: Annotated[str, "Date YYYY-MM-DD, empty string for today"] = "",
+    top_n: Annotated[int, "Top-N strategies to return (max 50)"] = 20,
+) -> str:
+    """Get hot stock-picking strategies from 东财 np-ipick (institutional/editor view).
+
+    Returns strategies ranked by heatValue (用户使用频次/热度). The `question` field
+    is the picking condition (e.g. '涨幅>5%或涨停+连续三天10日线>30度角拉升').
+    Useful for sector rotation baseline: reveals which selection criteria the
+    market is currently rewarding, complementing the post-hoc THS limit-up view.
+    """
+    top_n = max(1, min(int(top_n), 50))
+    if not curr_date or curr_date.strip() == "":
+        curr_date = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        rows = _fetch_hot_strategy_data(curr_date, top_n)
+        if not rows:
+            # Try to surface a more specific error from a one-off request
+            return (
+                f"东财 np-ipick 返回空或错误: top_n={top_n} "
+                f"date={curr_date}"
+            )
+
+        lines = [
+            f"# 东财选股热度 Top {top_n} ({curr_date})",
+            f"# Source: np-ipick.eastmoney.com (机构/编辑视角)",
+            f"# 排序: heatValue 降序",
+            "",
+        ]
+        for i, row in enumerate(rows, 1):
+            lines.append(
+                f"  {i}. rank={row['rank']} heat={row['heatValue']} chg={row['chg']}"
+            )
+            lines.append(f"     条件: {row['question']}")
+            lines.append("")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching hot strategy ranking for {curr_date}: {str(e)}"
+
+
+def _extract_limitup_codes(markdown_text: str) -> list[dict]:
+    """Parse the Markdown output of get_hot_stocks into structured {code,name,reason} list.
+
+    get_hot_stocks lines look like:
+      - With price fields:  '002789 *ST建艺: +4.97% 换手0.37% ... | 庭外重组'
+      - Current-day w/o data: '688409 富创精密: +- 换手- 成交额- 大单净量- | 半导体设备+一季报扭亏'
+      - Legacy empty:        '688409 富创精密: +% 换手% 成交额 大单净量 | 半导体设备+一季报扭亏'
+    The price field shape varies, but every line is "6-digit code, name, colon, ..."
+    — that's the only signal we need. The percentage is informational, not required.
+    """
+    if not markdown_text or markdown_text.startswith("No hot stocks") or markdown_text.startswith("Error"):
+        return []
+    results = []
+    for line in markdown_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # positive check: only keep lines that start with a 6-digit code
+        if not _re.match(r"^\d{6}\s", line):
+            continue
+        if "|" not in line:
+            continue
+        left, _, reason = line.partition("|")
+        left = left.strip()
+        # Just match "<6-digit code> <name>:" — the price data is variable, so
+        # we don't anchor on it. The leading-code + '|' filter is enough to
+        # guarantee this is a limit-up row.
+        m = _re.match(r"^(\d{6})\s+(.+?):", left)
+        if not m:
+            continue
+        code, name = m.group(1), m.group(2).strip()
+        results.append({"code": code, "name": name, "reason": reason.strip()})
+    return results
+
+
+def _batch_reverse_concept_blocks(
+    stocks: list[dict],
+    batch_size: int = 10,
+    sleep_between: float = 0.5,
+) -> dict[str, list[dict]]:
+    """Reverse-lookup concept blocks for limit-up stocks via Baidu PAE.
+
+    Returns map: concept_block_name -> [stock, stock, ...] where each stock has
+    the block's daily change percentage (`ratio`).
+
+    Implementation notes:
+    - Baidu PAE accepts a batch of up to ~10 stocks in one HTTP call
+    - Adds defensive 0.5s sleep between batches (Baidu has no documented limit
+      but v0.2.5+ policy is to throttle all external HTTP)
+    - Only blocks with >= 2 limit-up stocks are returned (sparse signal filter)
+    """
+    from .config import get_config
+
+    config = get_config()
+    cache_dir = config.get(
+        "data_cache_dir", os.path.expanduser("~/.tradingagents/cache")
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_key = "sector_rotation_concept_v1.json"
+    cache_path = os.path.join(cache_dir, cache_key)
+
+    # Try cache first (per-day)
+    today = datetime.now().strftime("%Y%m%d")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = _json.load(f)
+            if cached.get("date") == today and cached.get("stocks") == [s["code"] for s in stocks]:
+                return cached.get("concept_blocks", {})
+        except Exception:
+            pass
+
+    concept_blocks: dict[str, list[dict]] = {}
+    headers = {
+        "User-Agent": _UA,
+        "Referer": "https://gushitong.baidu.com/",
+    }
+
+    for i in range(0, len(stocks), batch_size):
+        batch = stocks[i : i + batch_size]
+        stock_param = "[" + ",".join(
+            f'{{"code":"{s["code"]}","market":"ab","type":"stock"}}' for s in batch
+        ) + "]"
+        url = (
+            "https://finance.pae.baidu.com/api/getrelatedblock"
+            f"?stock={urllib.parse.quote(stock_param)}&finClientType=pc"
+        )
+        try:
+            r = _requests.get(url, headers=headers, timeout=15)
+            r.raise_for_status()
+            d = r.json()
+            result = d.get("Result", {}) or {}
+            for s in batch:
+                cats = result.get(s["code"], [])
+                for cat in cats:
+                    if cat.get("name") != "概念":
+                        continue
+                    for it in cat.get("list", []):
+                        block_name = it.get("name", "").strip()
+                        if not block_name:
+                            continue
+                        ratio = it.get("ratio", "")
+                        concept_blocks.setdefault(block_name, []).append(
+                            {**s, "ratio": ratio}
+                        )
+        except Exception:
+            # Partial failure (e.g. Baidu 5xx): drop this batch's data, continue.
+            # Result is still cached for the day; transient failures self-heal on next reload.
+            continue
+        if i + batch_size < len(stocks):
+            time.sleep(sleep_between)
+
+    # Filter to blocks with >= 2 limit-up stocks (signal density)
+    filtered = {
+        k: v for k, v in concept_blocks.items() if len(v) >= 2
+    }
+
+    # Cache result for the day
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            _json.dump(
+                {
+                    "date": today,
+                    "stocks": [s["code"] for s in stocks],
+                    "concept_blocks": filtered,
+                },
+                f,
+                ensure_ascii=False,
+            )
+    except Exception:
+        pass
+
+    return filtered
+
+
+def get_sector_rotation_digest(
+    curr_date: Annotated[str, "Date YYYY-MM-DD, empty string for today"] = "",
+    top_n: Annotated[int, "Top-N limit-up stocks to reverse-lookup"] = 20,
+) -> SectorRotationDigest:
+    """Generate a daily A-stock sector rotation digest by combining three data sources.
+
+    1. np-ipick hot strategy ranking (institutional/editor view) — what themes
+       the market is currently rewarding
+    2. THS limit-up stocks with reason tags — what actually surged today
+    3. Baidu PAE reverse-lookup of limit-up stocks' concept blocks — to aggregate
+       "most limit-up-dense concept blocks" (proxy for sector-level rotation signal)
+
+    Returns a SectorRotationDigest with both structured fields and a pre-rendered
+    Markdown digest. Partial failures are non-fatal: failed sources are marked in
+    `sources_ok` and the markdown annotates `[数据缺失: <source>]`.
+    """
+    if not curr_date or curr_date.strip() == "":
+        curr_date = datetime.now().strftime("%Y-%m-%d")
+
+    top_n = max(1, min(int(top_n), 50))
+
+    sources_ok: dict[str, bool] = {
+        "np_ipick": False,
+        "ths_limitup": False,
+        "baidu_pae": False,
+    }
+
+    # Source 1: np-ipick hot strategy ranking
+    hot_strategies: list[dict] = []
+    try:
+        strategy_md = get_hot_strategy_ranking(curr_date, top_n=top_n)
+        if not strategy_md.startswith("Error"):
+            # Parse back to dict list (top-N "rank/heat/chg/condition" entries)
+            for line in strategy_md.splitlines():
+                m = _re.match(
+                    r"\s*(\d+)\.\s+rank=(\S+)\s+heat=(\d+)\s+chg=([+-]?[\d.]+%)",
+                    line,
+                )
+                if m:
+                    # find the next "条件:" line
+                    idx = strategy_md.splitlines().index(line)
+                    next_lines = strategy_md.splitlines()[idx + 1 : idx + 2]
+                    cond = ""
+                    for nl in next_lines:
+                        m2 = _re.match(r"\s*条件:\s*(.*)", nl)
+                        if m2:
+                            cond = m2.group(1).strip()
+                            break
+                    hot_strategies.append(
+                        {
+                            "rank": m.group(2),
+                            "heatValue": int(m.group(3)),
+                            "chg": m.group(4),
+                            "question": cond,
+                        }
+                    )
+            sources_ok["np_ipick"] = bool(hot_strategies)
+    except Exception:
+        pass
+
+    # Source 2: THS limit-up stocks (reuse existing get_hot_stocks)
+    hot_stocks: list[dict] = []
+    try:
+        ths_md = get_hot_stocks(curr_date)
+        hot_stocks = _extract_limitup_codes(ths_md)[:top_n]
+        sources_ok["ths_limitup"] = True  # source succeeded (even if 0 stocks)
+    except Exception:
+        pass
+
+    # Source 3: Reverse-lookup concept blocks
+    concept_blocks: dict[str, list[dict]] = {}
+    if hot_stocks:
+        try:
+            concept_blocks = _batch_reverse_concept_blocks(hot_stocks)
+            sources_ok["baidu_pae"] = bool(concept_blocks)
+        except Exception:
+            pass
+
+    # Render Markdown digest
+    md_lines = [
+        f"# 板块轮动日报 | {curr_date}",
+        "",
+        f"> 数据源: 东财 np-ipick 选股热度 + 同花顺 涨停归因 + 百度 PAE 概念反查",
+        f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "## 一、机构/编辑视角 — 选股热度 Top N",
+        "",
+    ]
+    if hot_strategies:
+        for i, s in enumerate(hot_strategies[:top_n], 1):
+            md_lines.append(
+                f"{i}. heat={s.get('heatValue', 0)} chg={s.get('chg', '-')} "
+                f"| {s.get('question', '')[:120]}"
+            )
+    else:
+        md_lines.append("[数据缺失: np-ipick]")
+
+    if concept_blocks:
+        md_lines.extend(["", "## 二、强势概念板块 (按涨停密集度)", ""])
+        sorted_blocks = sorted(
+            concept_blocks.items(), key=lambda x: len(x[1]), reverse=True
+        )
+        for block_name, stocks_in_block in sorted_blocks[:10]:
+            md_lines.append(
+                f"**{block_name}** ({len(stocks_in_block)} 只涨停): "
+                + ", ".join(f"{s['code']} {s['name']}" for s in stocks_in_block[:5])
+            )
+    elif hot_stocks:
+        md_lines.extend(["", "## 二、强势概念板块 (按涨停密集度)", ""])
+        md_lines.append("[数据缺失: 百度 PAE]")
+    else:
+        # Spec scenario 2.4: explicit single-line note for no-limitup case
+        md_lines.extend(["", "## 二、强势概念板块: 当日无涨停股,跳过涨停归因", ""])
+
+    md_lines.extend(["", "## 三、龙头候选池 (去重, 按概念板块聚合)", ""])
+    if concept_blocks:
+        seen_codes: set[str] = set()
+        for block_name, stocks_in_block in sorted(
+            concept_blocks.items(), key=lambda x: len(x[1]), reverse=True
+        )[:5]:
+            md_lines.append(f"### {block_name}")
+            for s in stocks_in_block[:5]:
+                if s["code"] in seen_codes:
+                    continue
+                seen_codes.add(s["code"])
+                md_lines.append(
+                    f"- {s['code']} {s['name']} | 板块涨幅: {s.get('ratio', '-')} "
+                    f"| 涨停理由: {s.get('reason', '-')[:80]}"
+                )
+    else:
+        md_lines.append("(无候选池数据)")
+
+    md_lines.extend(["", "## 四、个股涨停理由归因 (Top 10)", ""])
+    if hot_stocks:
+        for s in hot_stocks[:10]:
+            md_lines.append(
+                f"- {s['code']} {s['name']}: {s.get('reason', '-')[:120]}"
+            )
+    elif not sources_ok["ths_limitup"]:
+        # THS source failed — distinguish from "no stocks" day
+        md_lines.append("[数据缺失: THS]")
+    else:
+        md_lines.append("当日无涨停股")
+
+    md_lines.append("")
+    md_lines.append("---")
+    md_lines.append(
+        f"数据源状态: np-ipick={'✅' if sources_ok['np_ipick'] else '❌'} "
+        f"| THS={'✅' if sources_ok['ths_limitup'] else '❌'} "
+        f"| Baidu PAE={'✅' if sources_ok['baidu_pae'] else '❌'}"
+    )
+
+    return SectorRotationDigest(
+        hot_strategies=hot_strategies,
+        hot_stocks=hot_stocks,
+        concept_blocks=concept_blocks,
+        markdown="\n".join(md_lines),
+        sources_ok=sources_ok,
+    )
