@@ -1,0 +1,47 @@
+/* Design tokens — all CSS variables in :root.
+   Single source of truth for colors, fonts, radii.
+   "Bloomberg 精化" — glacier blue accent on blue-tinted dark, generous radii. */
+
+:root {
+    /* ── Fonts ──────────────────────────────── */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+
+    /* ── Backgrounds (blue-tinted dark) ─────── */
+    --bg-base:     #0a0e14;
+    --bg-surface:  #0e131b;
+    --bg-elevated: #131a24;
+    --bg-input:    #060a10;
+
+    /* ── Borders (hairline) ─────────────────── */
+    --border-1: #1c2532;
+    --border-2: #2a3548;
+    --border-3: #3a4660;
+
+    /* ── Text ───────────────────────────────── */
+    --text-primary:   #e4e8f0;
+    --text-secondary: #8a96a8;
+    --text-tertiary:  #5a6478;
+
+    /* ── Accent (glacier blue) ──────────────── */
+    --bb-accent:        #4d9aff;
+    --bb-accent-bright: #7ab4ff;
+    --bb-accent-dim:    #2a5faa;
+    --bb-accent-glow:   rgba(77, 154, 255, 0.18);
+    --bb-accent-soft:   rgba(77, 154, 255, 0.08);
+
+    /* ── Financial state ────────────────────── */
+    --bb-up:      #00d68f;
+    --bb-down:    #ff4d6d;
+    --bb-neutral: #8a96a8;
+
+    /* ── Radii (8/12/16 — modern fintech) ───── */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+
+    /* ── Shadows (depth) ────────────────────── */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+}

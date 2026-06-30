@@ -1,0 +1,87 @@
+/* Base reset — fonts, chrome, surfaces, scrollbar, background depth. */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
+
+/* ── Hide streamlit chrome ────────────────── */
+#MainMenu, footer,
+div[data-testid="stDecoration"],
+div[data-testid="stStatusWidget"],
+div[data-testid="stToolbarActions"],
+div[data-testid="stAppDeployButton"],
+span[data-testid="stMainMenu"] {
+    display: none !important;
+}
+
+header[data-testid="stHeader"] {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+/* Sidebar collapse buttons must stay visible (v0.2.8 fix) */
+button[data-testid="stExpandSidebarButton"],
+button[data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarCollapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+
+/* ── Typography ────────────────────────────── */
+html, body, [class*="css"] {
+    font-family: var(--font-sans) !important;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+}
+
+code, pre, kbd, samp {
+    font-family: var(--font-mono) !important;
+}
+
+/* ── Surfaces — with depth ─────────────────── */
+.stApp {
+    background:
+        radial-gradient(ellipse 1200px 600px at 50% -10%, rgba(77, 154, 255, 0.06), transparent 60%),
+        radial-gradient(ellipse 800px 400px at 100% 100%, rgba(77, 154, 255, 0.03), transparent 60%),
+        var(--bg-base);
+    background-attachment: fixed;
+}
+
+/* Subtle dot grid overlay for financial-terminal texture */
+.stApp::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image:
+        radial-gradient(circle, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+    background-size: 24px 24px;
+    pointer-events: none;
+    z-index: 0;
+}
+
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, var(--bg-surface) 0%, var(--bg-base) 100%);
+    border-right: 1px solid var(--border-1);
+    box-shadow: 1px 0 0 0 var(--border-1);
+}
+
+.stSpinner > div {
+    border-top-color: var(--bb-accent) !important;
+}
+
+/* ── Scrollbar ─────────────────────────────── */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: var(--border-2);
+    border-radius: var(--radius-sm);
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--border-3);
+}

@@ -1,0 +1,205 @@
+/* Streamlit built-in component overrides.
+   These elements have no per-instance class, only global selectors.
+   "Bloomberg 精化" — 8/12px radii, soft shadows, glacier blue focus glow. */
+
+/* ── Metric ───────────────────────────────── */
+.stMetric label {
+    color: var(--text-secondary) !important;
+    font-size: 0.7rem !important;
+    font-weight: 500;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+}
+.stMetric [data-testid="stMetricValue"] {
+    color: var(--bb-accent) !important;
+    font-family: var(--font-mono) !important;
+    font-weight: 600 !important;
+}
+
+/* ── Progress bar ─────────────────────────── */
+.stProgress > div > div > div {
+    background: linear-gradient(90deg, var(--bb-accent), var(--bb-accent-bright)) !important;
+    border-radius: var(--radius-sm);
+}
+.stProgress > div > div {
+    background: var(--border-1) !important;
+    border-radius: var(--radius-sm);
+}
+
+/* ── Primary button (glacier blue, depth) ─── */
+button[kind="primary"] {
+    background: linear-gradient(180deg, var(--bb-accent) 0%, #3d8ae8 100%) !important;
+    color: #fff !important;
+    border: 1px solid var(--bb-accent-dim) !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.06em !important;
+    font-size: 0.85rem !important;
+    border-radius: var(--radius-sm) !important;
+    box-shadow: var(--shadow-sm), 0 0 0 0 var(--bb-accent-glow) !important;
+    transition: all 0.15s ease !important;
+}
+button[kind="primary"]:hover {
+    background: linear-gradient(180deg, var(--bb-accent-bright) 0%, var(--bb-accent) 100%) !important;
+    box-shadow: var(--shadow-md), 0 0 0 4px var(--bb-accent-glow) !important;
+    transform: translateY(-1px);
+}
+button[kind="primary"]:active {
+    background: var(--bb-accent-dim) !important;
+    transform: translateY(0);
+    box-shadow: var(--shadow-sm) !important;
+}
+button[kind="primary"]:disabled {
+    background: var(--border-1) !important;
+    color: var(--text-tertiary) !important;
+    border-color: var(--border-1) !important;
+    box-shadow: none !important;
+    transform: none;
+}
+
+/* ── Secondary button (hairline outline) ──── */
+button[kind="secondary"] {
+    background: var(--bg-surface) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border-2) !important;
+    border-radius: var(--radius-sm) !important;
+    font-size: 0.85rem !important;
+    font-weight: 500;
+    transition: all 0.15s ease !important;
+}
+button[kind="secondary"]:hover {
+    border-color: var(--bb-accent) !important;
+    color: var(--bb-accent) !important;
+    background: var(--bg-elevated) !important;
+}
+
+/* ── Tabs ─────────────────────────────────── */
+.stTabs [data-baseweb="tab"] {
+    color: var(--text-secondary) !important;
+    background: transparent !important;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0 !important;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+}
+.stTabs [aria-selected="true"] {
+    color: var(--bb-accent) !important;
+    border-bottom: 2px solid var(--bb-accent) !important;
+    background: transparent !important;
+}
+
+/* ── Download button ──────────────────────── */
+div[data-testid="stDownloadButton"] button {
+    background: var(--bg-surface) !important;
+    border: 1px solid var(--border-2) !important;
+    color: var(--text-primary) !important;
+    border-radius: var(--radius-sm) !important;
+    font-weight: 500;
+    transition: all 0.15s ease !important;
+}
+div[data-testid="stDownloadButton"] button:hover {
+    border-color: var(--bb-accent) !important;
+    color: var(--bb-accent) !important;
+    background: var(--bg-elevated) !important;
+}
+
+/* ── Inputs ───────────────────────────────── */
+input[data-testid="stTextInputRootElement"] input,
+.stTextInput input,
+.stChatInput textarea,
+.stDateInput input {
+    background: var(--bg-input) !important;
+    border: 1px solid var(--border-2) !important;
+    color: var(--text-primary) !important;
+    border-radius: var(--radius-sm) !important;
+    font-family: var(--font-mono) !important;
+    transition: all 0.15s ease !important;
+}
+.stTextInput input:focus,
+.stChatInput textarea:focus,
+.stDateInput input:focus {
+    border-color: var(--bb-accent) !important;
+    box-shadow: 0 0 0 3px var(--bb-accent-glow) !important;
+    outline: none;
+}
+
+/* ── Selectbox ────────────────────────────── */
+[data-baseweb="select"] > div,
+.stSelectbox [data-baseweb="select"] {
+    background: var(--bg-input) !important;
+    border-color: var(--border-2) !important;
+    border-radius: var(--radius-sm) !important;
+    color: var(--text-primary) !important;
+}
+
+/* ── Expander ─────────────────────────────── */
+[data-testid="stExpander"] {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border-1) !important;
+    border-radius: var(--radius-md) !important;
+    box-shadow: var(--shadow-sm);
+}
+[data-testid="stExpander"] summary {
+    color: var(--text-primary) !important;
+    font-family: var(--font-sans) !important;
+    font-weight: 500;
+    border-radius: var(--radius-md) !important;
+}
+
+/* ── Alert (info/success/warning/error) ───── */
+[data-testid="stAlert"] {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border-1) !important;
+    border-left: 3px solid var(--bb-accent) !important;
+    border-radius: var(--radius-md) !important;
+    color: var(--text-primary) !important;
+    box-shadow: var(--shadow-sm);
+}
+
+/* ── Caption ──────────────────────────────── */
+.stCaption, [data-testid="stCaptionContainer"] {
+    color: var(--text-secondary) !important;
+    font-weight: 300;
+}
+
+/* ── Code block ───────────────────────────── */
+.stCodeBlock, pre, code {
+    background: var(--bg-elevated) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border-1) !important;
+    border-radius: var(--radius-sm) !important;
+}
+
+/* ── Tables ───────────────────────────────── */
+.stMarkdown table, table {
+    background: var(--bg-surface) !important;
+    border-collapse: separate !important;
+    border-spacing: 0;
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-md) !important;
+    overflow: hidden;
+    width: 100% !important;
+    font-family: var(--font-mono) !important;
+    font-size: 0.85rem !important;
+    box-shadow: var(--shadow-sm);
+}
+.stMarkdown th, table th {
+    background: var(--bg-elevated) !important;
+    color: var(--text-secondary) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+    font-size: 0.7rem !important;
+    font-weight: 600 !important;
+    border-bottom: 1px solid var(--border-2) !important;
+    padding: 0.6rem 0.75rem !important;
+    text-align: left !important;
+}
+.stMarkdown td, table td {
+    color: var(--text-primary) !important;
+    border-bottom: 1px solid var(--border-1) !important;
+    padding: 0.6rem 0.75rem !important;
+}
+
+/* ── Column gap ───────────────────────────── */
+[data-testid="column"] {
+    padding: 0 0.5rem;
+}
