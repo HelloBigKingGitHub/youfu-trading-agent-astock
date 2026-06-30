@@ -156,8 +156,67 @@ def _render_recent_analyses() -> None:
                 st.rerun()
 
 
+def _render_analysis_form() -> None:
+    """Render the 'new analysis' form at the top of the analyze page.
+
+    Moved from sidebar to main area in v0.2.14 so the form sits with the
+    analysis content rather than competing for sidebar real estate with
+    the nav buttons and history list.
+    """
+    from datetime import date
+
+    from web.components.sidebar import _render_llm_config, _resolve_user_input
+
+    with st.container(key="main_analysis_form_container"):
+        st.html('<div class="bb-section-label">新建分析</div>')
+
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            ticker = st.text_input(
+                "股票代码",
+                placeholder="例: 300750 或 宁德时代",
+                key="input_ticker_main",
+                help="输入6位A股代码或中文股票全称",
+            )
+        with col2:
+            trade_date = st.date_input(
+                "分析日期",
+                value=date.today(),
+                key="input_date_main",
+            )
+
+        with st.expander("⚙️  模型配置", expanded=False):
+            _render_llm_config()
+
+        tracker = st.session_state.get("tracker")
+        is_busy = tracker is not None and tracker.is_running
+        button_label = "⏳ 分析进行中..." if is_busy else "🚀 开始分析"
+
+        if st.button(
+            button_label,
+            use_container_width=True,
+            disabled=is_busy or not ticker,
+            type="primary",
+            key="main_start_analysis",
+        ):
+            resolved_code, err = _resolve_user_input(ticker)
+            if err:
+                st.error(f"❌ {err}")
+            else:
+                if resolved_code != ticker.strip():
+                    st.success(f"✅ {ticker.strip()} → {resolved_code}")
+                st.session_state["start_analysis"] = {
+                    "ticker": resolved_code,
+                    "trade_date": trade_date.strftime("%Y-%m-%d"),
+                }
+                st.session_state["viewing_history"] = None
+                st.rerun()
+
+
 def _render_idle_screen() -> None:
-    """Render the welcome hero + 4 recent analysis cards + disclaimer."""
+    """Render the new-analysis form + welcome hero + 4 recent analysis cards + disclaimer."""
+
+    _render_analysis_form()
 
     st.markdown(
         """

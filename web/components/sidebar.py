@@ -1,16 +1,17 @@
-"""Sidebar: logo header, stock input, LLM config, and history list."""
+"""Sidebar: logo header, 4-button page nav, and bottom disclaimer.
+
+The new-analysis form and history list have been moved out of the sidebar —
+they now live in the main area of the analyze / history pages respectively.
+This module keeps the shared helpers (_resolve_user_input, _render_llm_config)
+and the logo block; _render_llm_config is imported by app.py for the main-area
+form.
+"""
 
 from __future__ import annotations
-
-import html
-from datetime import date
 
 import streamlit as st
 
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
-from web._signal_helpers import signal_badge
-from web.history import get_history
-from web.progress import STAGE_IDS
 
 # Provider display names in recommended order
 _PROVIDERS: list[tuple[str, str]] = [
@@ -165,180 +166,13 @@ def render_sidebar_logo() -> None:
     )
 
 
-def _sort_history(history: list, sort_by: str) -> list:
-    """Sort history entries by the given criteria. Returns a new list."""
-    if sort_by == "最新":
-        return list(history)
-    if sort_by == "最旧":
-        return list(reversed(history))
-    if sort_by == "Ticker A-Z":
-        return sorted(history, key=lambda h: h.get("ticker", ""))
-    if sort_by == "Ticker Z-A":
-        return sorted(history, key=lambda h: h.get("ticker", ""), reverse=True)
-    if sort_by == "Bull first":
-        order = {"BUY": 0, "OVERWEIGHT": 0, "LONG": 0, "HOLD": 1, "SELL": 2, "UNDERWEIGHT": 2, "SHORT": 2}
-        return sorted(history, key=lambda h: order.get((h.get("signal", "") or "").upper(), 3))
-    if sort_by == "Bear first":
-        order = {"SELL": 0, "UNDERWEIGHT": 0, "SHORT": 0, "HOLD": 1, "BUY": 2, "OVERWEIGHT": 2, "LONG": 2}
-        return sorted(history, key=lambda h: order.get((h.get("signal", "") or "").upper(), 3))
-    return list(history)
-
-
-def _render_history_entry(entry: dict) -> None:
-    """Render one sidebar history row as a ticker + date + signal badge.
-
-    Streamlit buttons don't allow custom inner HTML, so we render the visual
-    row with st.html and put a real button underneath for the click target.
-    The button keeps a unique key per analysis_id (see b17eb0f).
-    """
-    ticker_raw = entry.get("ticker", "")
-    ticker = html.escape(ticker_raw)
-    trade_date = html.escape(entry.get("date", ""))
-    signal = entry.get("signal", "") or ""
-    status = entry.get("status", "") or ""
-    aid = entry.get("analysis_id") or f"{ticker_raw}_{entry.get('date', '')}"
-    badge_kind, badge_label = signal_badge(signal, status)
-    badge_label_esc = html.escape(badge_label)
-    active_path = st.session_state.get("viewing_history")
-    is_active = bool(active_path) and active_path == entry.get("path")
-
-    st.html(
-        f"""
-        <div class="bb-sidebar-history-item{' bb-sidebar-history-item--active' if is_active else ''}">
-            <div class="bb-sidebar-history-left">
-                <div class="bb-sidebar-history-ticker">{ticker}</div>
-                <div class="bb-sidebar-history-date">{trade_date}</div>
-            </div>
-            <div class="bb-card-badge bb-card-badge--{badge_kind}">
-                <span class="bb-card-badge-dot"></span>
-                <span>{badge_label_esc}</span>
-            </div>
-        </div>
-        """
-    )
-    if st.button(
-        "查看报告",
-        key=f"hist_{aid}",
-        use_container_width=True,
-    ):
-        st.session_state["viewing_history"] = entry.get("path") or None
-        st.session_state["start_analysis"] = None
-        st.rerun()
-
-
-def _render_sidebar_status(tracker) -> None:
-    """Render a compact status row inside the sidebar form. No-op when idle."""
-    if tracker is None:
-        return
-    if tracker.is_running:
-        completed = len(tracker.completed_stages)
-        total = max(len(STAGE_IDS), 1)
-        pct = min(int(completed * 100 / total), 99)
-        st.html(f'<div class="bb-sidebar-status bb-sidebar-status--running">🟡 进度 {pct}%</div>')
-        st.progress(min(completed / total, 0.99))
-    elif tracker.is_complete:
-        ticker_esc = html.escape(tracker.ticker)
-        st.html(f'<div class="bb-sidebar-status bb-sidebar-status--complete">✅ 完成 · {ticker_esc}</div>')
-    elif tracker.error:
-        st.html('<div class="bb-sidebar-status bb-sidebar-status--error">❌ 失败</div>')
-
-
 def render_sidebar() -> None:
-    """Render the new-analysis form, history list, and disclaimer."""
+    """Render only the bottom disclaimer in the sidebar.
 
-    with st.container(key="sidebar_form_container"):
-        st.html('<div class="bb-sidebar-section-label">新建分析</div>')
-
-        ticker = st.text_input(
-            "股票代码",
-            placeholder="例: 300750 或 宁德时代",
-            key="input_ticker",
-            label_visibility="collapsed",
-            help="输入6位A股代码或中文股票全称",
-        )
-
-        trade_date = st.date_input(
-            "分析日期",
-            value=date.today(),
-            key="input_date",
-        )
-
-        tracker = st.session_state.get("tracker")
-        _render_sidebar_status(tracker)
-
-        with st.expander(f"⚙️  模型配置  ·  {_current_model_label()}", expanded=False):
-            _render_llm_config()
-
-        is_busy = tracker is not None and tracker.is_running
-        button_label = "⏳ 分析进行中..." if is_busy else "🚀 开始分析"
-
-        if st.button(
-            button_label,
-            use_container_width=True,
-            disabled=is_busy or not ticker,
-            type="primary",
-            key="sidebar_start_analysis",
-        ):
-            resolved_code, err = _resolve_user_input(ticker)
-            if err:
-                st.error(f"❌ {err}")
-            else:
-                if resolved_code != ticker.strip():
-                    st.success(f"✅ {ticker.strip()} → {resolved_code}")
-            st.session_state["start_analysis"] = {
-                "ticker": resolved_code,
-                "trade_date": trade_date.strftime("%Y-%m-%d"),
-            }
-            st.session_state["viewing_history"] = None
-            st.rerun()
-
-    history = get_history()
-    total = len(history)
-
-    with st.container(key="sidebar_history_container"):
-        st.html(
-            f'<div class="bb-section-label">历史记录 '
-            f'<span class="bb-section-label-count">({total})</span></div>'
-        )
-
-        search_query = st.text_input(
-            "🔍",
-            placeholder="搜索 ticker (如 600595)",
-            key="sidebar_history_search",
-            label_visibility="collapsed",
-        )
-        sort_by = st.selectbox(
-            "排序",
-            ["最新", "最旧", "Ticker A-Z", "Ticker Z-A", "Bull first", "Bear first"],
-            key="sidebar_history_sort",
-            label_visibility="collapsed",
-        )
-
-        if not history:
-            st.html('<div class="bb-sidebar-empty">暂无历史记录</div>')
-        else:
-            filtered = [
-                h for h in history
-                if not search_query or search_query.upper() in h.get("ticker", "").upper()
-            ]
-            sorted_list = _sort_history(filtered, sort_by)
-
-            if not sorted_list:
-                st.html('<div class="bb-sidebar-empty">无匹配记录</div>')
-            else:
-                with st.container(key="sidebar_history_list"):
-                    for entry in sorted_list[:20]:
-                        _render_history_entry(entry)
-
-                if len(sorted_list) > 20:
-                    if st.button(
-                        "查看全部 →",
-                        key="view_all_history",
-                        use_container_width=True,
-                    ):
-                        st.session_state["nav"] = "history"
-                        st.rerun()
-
+    The new-analysis form has been moved to the analyze page (main area) and
+    the history list has been moved to the history page. The sidebar now
+    only contains the logo, nav buttons, and this disclaimer.
+    """
     st.html(
         """
         <div class="bb-sidebar-disclaimer">

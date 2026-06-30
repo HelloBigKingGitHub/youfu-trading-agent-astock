@@ -51,6 +51,37 @@
     color: var(--bb-accent-bright);
 }
 
+/* ── New-analysis form (main area, v0.2.14) ────
+   Moved from the sidebar to the top of the analyze page in v0.2.14.
+   Same elevated box look as the sidebar block, but with slightly larger
+   padding because the main area has more breathing room. */
+.st-key-main_analysis_form_container {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-md);
+    padding: 1.1rem 1.4rem 1.25rem;
+    margin-bottom: 1.75rem;
+    box-shadow: var(--shadow-sm);
+}
+.st-key-main_analysis_form_container .bb-section-label {
+    margin-top: 0;
+    margin-bottom: 0.55rem;
+}
+.st-key-main_analysis_form_container [data-testid="stTextInputRootElement"],
+.st-key-main_analysis_form_container [data-testid="stDateInput"] {
+    margin-top: 0;
+    margin-bottom: 0.5rem;
+}
+.st-key-main_analysis_form_container [data-testid="stExpander"] {
+    margin-top: 0.4rem;
+}
+.st-key-main_analysis_form_container [data-testid="stExpanderDetails"] {
+    padding-top: 0.4rem;
+}
+.st-key-main_analysis_form_container button[kind="primary"] {
+    margin-top: 0.6rem;
+}
+
 /* ── Hero (main page idle state) ──────────── */
 .bb-hero {
     text-align: center;
