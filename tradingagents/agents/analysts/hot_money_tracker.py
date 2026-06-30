@@ -10,6 +10,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_language_instruction,
     get_news,
     get_northbound_flow,
+    get_sector_rotation_digest,
     get_stock_data,
 )
 from tradingagents.dataflows.config import get_config
@@ -23,6 +24,7 @@ def create_hot_money_tracker(llm):
         instrument_context = build_instrument_context(state["company_of_interest"])
 
         tools = [
+            get_sector_rotation_digest,
             get_stock_data,
             get_news,
             get_insider_transactions,
@@ -43,13 +45,15 @@ def create_hot_money_tracker(llm):
             "\n- **板块资金流向**：资金从一个板块撤出往往流入另一个板块，跟踪轮动节奏有助于预判下一个热点"
             "\n- **大股东/机构行为**：大股东增减持、机构调研频次变化、定增/配股等融资行为反映内部人态度"
             "\n\n分析方法："
-            "\n1. 先调用 get_stock_data 获取近期 K 线和成交量数据，识别量价异动"
-            "\n2. 调用 get_insider_transactions 获取股东/内部人交易记录，判断主力动向"
-            "\n3. 调用 get_news 搜索游资、龙虎榜、主力资金相关新闻"
-            "\n4. 调用 get_hot_stocks 获取当日强势股及题材归因（同花顺编辑部人工标注），识别热点板块轮动"
-            "\n5. 调用 get_northbound_flow 获取北向资金（沪深股通）实时分钟级流向，判断外资态度"
-            "\n6. 综合判断当前资金博弈格局：主力吸筹 / 主力出货 / 游资接力 / 散户主导"
+            "\n1. **先调用 get_sector_rotation_digest** 获取当日板块轮动大盘（np-ipick 选股热度 + 同花顺涨停归因 + 百度 PAE 概念反查），建立板块级资金/情绪基线。**此工具每个 session 仅调用 1 次**，重复调用浪费 token。"
+            "\n2. 在板块轮动基础上聚焦个股：调用 get_stock_data 获取近期 K 线和成交量数据，识别量价异动"
+            "\n3. 调用 get_insider_transactions 获取股东/内部人交易记录，判断主力动向"
+            "\n4. 调用 get_news 搜索游资、龙虎榜、主力资金相关新闻"
+            "\n5. 调用 get_hot_stocks 获取当日强势股及题材归因（同花顺编辑部人工标注），识别热点板块轮动"
+            "\n6. 调用 get_northbound_flow 获取北向资金（沪深股通）实时分钟级流向，判断外资态度"
+            "\n7. 综合判断当前资金博弈格局：主力吸筹 / 主力出货 / 游资接力 / 散户主导"
             "\n\n请使用以下工具："
+            "\n- `get_sector_rotation_digest(curr_date)`：获取当日板块轮动日报（np-ipick 选股热度 + 同花顺涨停归因 + 百度 PAE 概念反查的 4 段式 Markdown）。每个 session 最多调用 1 次。"
             "\n- `get_stock_data`：获取 K 线和成交量数据"
             "\n- `get_news(query, start_date, end_date)`：搜索游资/资金流向相关新闻"
             "\n- `get_insider_transactions`：获取股东和内部人交易数据"

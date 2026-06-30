@@ -153,3 +153,56 @@ def get_industry_comparison(
         str: Industry performance ranking with key metrics
     """
     return route_to_vendor("get_industry_comparison", ticker, curr_date)
+
+
+@tool
+def get_hot_strategy_ranking(
+    curr_date: Annotated[str, "Date in YYYY-MM-DD format, empty for today"] = "",
+    top_n: Annotated[int, "Top-N strategies to return (max 50)"] = 20,
+) -> str:
+    """
+    Retrieve hot stock-picking strategies from 东财 np-ipick (institutional/editor view).
+    Returns top-N strategies ranked by heatValue (user adoption frequency) with
+    the full picking condition text. Reveals which selection criteria the
+    market is currently rewarding — useful as a sector rotation baseline.
+
+    Limit calls to 1 per session — the ranking is comprehensive, repeat calls
+    waste tokens. Uses the configured signal_data vendor.
+    Args:
+        curr_date (str): Date in YYYY-MM-DD format, empty string for today
+        top_n (int): Top-N strategies to return (default 20, max 50)
+    Returns:
+        str: Markdown-formatted hot strategy ranking
+    """
+    return route_to_vendor("get_hot_strategy_ranking", curr_date, top_n)
+
+
+@tool
+def get_sector_rotation_digest(
+    curr_date: Annotated[str, "Date in YYYY-MM-DD format, empty for today"] = "",
+    top_n: Annotated[int, "Top-N limit-up stocks to reverse-lookup"] = 20,
+) -> str:
+    """
+    Generate a daily A-stock sector rotation digest by combining:
+    1. np-ipick hot strategy ranking (institutional/editor view)
+    2. THS limit-up stocks with reason tags (post-hoc market view)
+    3. Baidu PAE reverse-lookup of concept blocks for limit-up stocks
+       (aggregates "most limit-up-dense concept blocks")
+
+    Returns a 4-section Markdown digest: institutional view, strong concept
+    blocks, leading stock candidate pool, and individual stock reasons.
+
+    Limit calls to 1 per session — the digest covers all sectors at once.
+    Repeated calls waste tokens and add ~15-25s latency. Uses the configured
+    signal_data vendor.
+    Args:
+        curr_date (str): Date in YYYY-MM-DD format, empty string for today
+        top_n (int): Top-N limit-up stocks to reverse-lookup (default 20, max 50)
+    Returns:
+        str: Markdown digest (the .markdown field of SectorRotationDigest)
+    """
+    digest = route_to_vendor("get_sector_rotation_digest", curr_date, top_n)
+    # route_to_vendor returns the dataclass; serialize to markdown string for the tool
+    if hasattr(digest, "markdown"):
+        return digest.markdown
+    return str(digest)
