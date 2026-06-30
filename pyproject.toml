@@ -3,14 +3,14 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tradingagents-astock"
-version = "0.2.11"
-description = "A股多Agent投研框架 — 基于 TradingAgents 深度特化"
+name = "youfu-trading-agent-astock"
+version = "0.2.14"
+description = "A股多Agent投研框架 — 基于 TradingAgents 深度特化, fork 自 simonlin1212/tradingagents-astock"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [
-    {name = "simonlin1212", email = "simonlin1212@users.noreply.github.com"},
+    {name = "youfu", email = "HelloBigKingGitHub@users.noreply.github.com"},
 ]
 dependencies = [
     "langchain-core>=0.3.81",
@@ -40,9 +40,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/simonlin1212/tradingagents-astock"
-Repository = "https://github.com/simonlin1212/tradingagents-astock"
-Issues = "https://github.com/simonlin1212/tradingagents-astock/issues"
+Homepage = "https://github.com/HelloBigKingGitHub/youfu-trading-agent-astock"
+Repository = "https://github.com/HelloBigKingGitHub/youfu-trading-agent-astock"
+Issues = "https://github.com/HelloBigKingGitHub/youfu-trading-agent-astock/issues"
 Upstream = "https://github.com/TauricResearch/TradingAgents"
 
 [project.optional-dependencies]
