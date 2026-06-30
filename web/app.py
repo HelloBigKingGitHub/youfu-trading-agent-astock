@@ -221,12 +221,14 @@ def _render_analysis_form() -> None:
 
 
 def _render_idle_screen() -> None:
-    """Render the new-analysis form + welcome hero + 4 recent analysis cards + disclaimer."""
-    try:
-        _render_recent_analyses()
-    except Exception as exc:
-        st.warning(f"最近分析加载异常: {exc}")
+    """Render the new-analysis form + welcome hero + 4 recent analysis cards + disclaimer.
 
+    Layout (top → bottom):
+      1. New-analysis form (the primary CTA — start here)
+      2. Welcome hero
+      3. 4 recent-analysis cards
+      4. Bottom disclaimer
+    """
     _render_analysis_form()
 
     st.markdown(
@@ -243,6 +245,11 @@ def _render_idle_screen() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+    try:
+        _render_recent_analyses()
+    except Exception as exc:
+        st.warning(f"最近分析加载异常: {exc}")
 
     try:
         st.html(
