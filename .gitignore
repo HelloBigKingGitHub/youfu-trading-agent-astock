@@ -217,3 +217,13 @@ __marimo__/
 
 # Cache
 **/data_cache/
+
+# added 2026-06-30 by setup script
+~/
+mobile/node_modules/
+mobile/.next/
+backend/**/__pycache__/
+*.tsbuildinfo
+.understand-anything/fingerprints.json
+.understand-anything/knowledge-graph.json
+.claude/
