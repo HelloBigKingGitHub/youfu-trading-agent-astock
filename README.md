@@ -1,4 +1,4 @@
-<h1 align="center">Youfu-Trading-Agent-Astock</h1>
+<h1 align="center">TradingAgents-Astock</h1>
 
 <p align="center">
   基于 <a href="https://github.com/TauricResearch/TradingAgents">TauricResearch/TradingAgents</a>（65K ⭐）的 A 股深度特化 fork<br>
@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/HelloBigKingGitHub/youfu-trading-agent-astock/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/HelloBigKingGitHub/youfu-trading-agent-astock?style=social"/></a>
-  <a href="https://github.com/HelloBigKingGitHub/youfu-trading-agent-astock/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/HelloBigKingGitHub/youfu-trading-agent-astock?style=social"/></a>
+  <a href="https://github.com/simonlin1212/tradingagents-astock/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/simonlin1212/tradingagents-astock?style=social"/></a>
+  <a href="https://github.com/simonlin1212/tradingagents-astock/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/simonlin1212/tradingagents-astock?style=social"/></a>
   <a href="https://arxiv.org/abs/2412.20138"><img alt="论文" src="https://img.shields.io/badge/论文-arXiv_2412.20138-B31B1B?logo=arxiv"/></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue"/></a>
   <a href="./CHANGES_FROM_UPSTREAM.md"><img alt="改动记录" src="https://img.shields.io/badge/改动记录-CHANGES-orange"/></a>
@@ -28,7 +28,6 @@
 - [数据源](#数据源)
 - [快速开始](#快速开始)
 - [Web UI](#web-ui)
-- [板块轮动日报](#板块轮动日报)
 - [配置说明](#配置说明)
 - [项目结构](#项目结构)
 - [致谢](#致谢)
@@ -116,7 +115,7 @@
 | 角色 | 职责 | 数据工具 | 为什么需要 |
 |------|------|---------|-----------|
 | 🏛️ 政策分析师 | 监管政策、产业政策、窗口指导 | `get_news`, `get_global_news` | A 股是政策市，政策变化直接影响板块轮动 |
-| 🔥 游资追踪师 | 龙虎榜、大单流向、主力资金动态 | `get_stock_data`, `get_news`, `get_insider_transactions`, `get_sector_rotation_digest` | 游资是 A 股短线定价的核心力量；v0.2.12 起先调用板块轮动日报建立板块级基线 |
+| 🔥 游资追踪师 | 龙虎榜、大单流向、主力资金动态 | `get_stock_data`, `get_news`, `get_insider_transactions` | 游资是 A 股短线定价的核心力量 |
 | 🔓 解禁监控师 | 限售股解禁、大股东减持、股权质押 | `get_insider_transactions`, `get_news`, `get_fundamentals` | 解禁是 A 股特有的重大供给冲击因素 |
 
 所有 7 个 Analyst 的报告会流入后续的 Bull/Bear 辩论和三方风险辩论，确保 A 股特色因素贯穿整条决策链。
@@ -132,9 +131,8 @@
 | **mootdx** | TCP 7709 | OHLCV K 线、财务快照、F10 文本 |
 | **腾讯财经** | HTTP (`qt.gtimg.cn`) | PE / PB / 市值 / 换手率（实时） |
 | **东方财富** | HTTP (datacenter / push2) | 龙虎榜、限售解禁、板块行情、个股信息 |
-| **东方财富 np-ipick** | HTTP | 选股热度排名（板块轮动日报用，v0.2.12 新增） |
 | **新浪财经** | HTTP | K 线历史、财报三表 |
-| **同花顺** | HTTP (10jqka) | EPS 一致预期、涨停股 + 题材归因（v0.2.12 板块轮动用） |
+| **同花顺** | HTTP (10jqka) | EPS 一致预期 |
 | **财联社** | HTTP (cls.cn) | 全球财经快讯 |
 | **百度股市通** | HTTP (finance.pae.baidu) | 概念板块分类、资金流向 |
 
@@ -150,8 +148,8 @@
 
 ```bash
 # Python >= 3.10
-git clone https://github.com/HelloBigKingGitHub/youfu-trading-agent-astock.git
-cd youfu-trading-agent-astock
+git clone https://github.com/simonlin1212/tradingagents-astock.git
+cd tradingagents-astock
 pip install -e .
 
 # 如需使用 Google Gemini 模型（可选）：
@@ -260,7 +258,6 @@ streamlit run web/app.py
 - **实时进度**：12 阶段 pipeline 实时显示（7 分析师 → 质量门控 → 辩论 → 风控 → 决策），所有已完成阶段的报告均可展开查看
 - **完整报告**：信号卡片（Buy/Hold/Sell）、7 份分析师报告、多空辩论、风控评估
 - **报告导出**：一键下载 **Markdown**（零依赖，永远可用）或 **PDF** 完整分析报告（PDF 自动适配 Windows/macOS/Linux 中文字体）
-- **板块轮动日报**（v0.2.12）：侧边栏「🔄 板块轮动」按钮，**不消耗 LLM token** 直接生成 A 股当日板块轮动快照：东财 np-ipick 选股热度 + 同花顺涨停归因 + 百度 PAE 概念反查 → 4 段式 Markdown
 - **历史记录**：自动保存并展示所有历史分析
 
 ### 截图
@@ -268,31 +265,6 @@ streamlit run web/app.py
 <p align="center">
   <img src="assets/web-ui-welcome.png" width="80%" alt="Web UI 欢迎页"/>
 </p>
-
----
-
-## 板块轮动日报
-
-v0.2.12 起 Web UI 侧边栏新增「🔄 板块轮动」按钮，一键生成 A 股当日板块轮动快照，**不消耗 LLM token**（不走 LangGraph，纯 HTTP 拉数 + Markdown 渲染，15-25s 出报告）。
-
-### 3 个数据源
-
-| 来源 | 提供内容 |
-|------|----------|
-| 东财 np-ipick | 选股热度 Top 20（机构/编辑视角，按 `heatValue` 降序） |
-| 同花顺 10jqka | 当日涨停股 + 题材归因（人工编辑的 reason tags） |
-| 百度 PAE | 涨停股 → 所属概念板块反查（≥ 2 只涨停股的概念保留） |
-
-### 4 段式输出
-
-1. **机构/编辑视角** — 东财选股热度 Top N
-2. **强势概念板块** — 涨停股聚类后的概念板块（含板块当日涨幅）
-3. **龙头候选池** — 涨停股按概念板块分组
-4. **个股涨停理由归因** — 同花顺 reason tags 列表
-
-### 数据源局限
-
-本日报采用「涨停股 → PAE 反查」路径，**不**走「行业 → 成分股」路径，原因是部分网络环境 push2/push2his 不稳定（5 次本地请求 0 次成功）。np-ipick + THS + PAE 对 push2 不可用环境是更稳的兜底方案。
 
 ---
 
@@ -318,7 +290,7 @@ v0.2.12 起 Web UI 侧边栏新增「🔄 板块轮动」按钮，一键生成 A
 ## 项目结构
 
 ```
-Youfu-Trading-Agent-Astock/
+TradingAgents-Astock/
 ├── tradingagents/
 │   ├── agents/
 │   │   ├── analysts/          # 7 个分析师
@@ -377,6 +349,22 @@ Youfu-Trading-Agent-Astock/
 [Apache License 2.0](./LICENSE)
 
 本项目是 TauricResearch/TradingAgents 的 fork，继承 Apache 2.0 许可证。详见 [NOTICE](./NOTICE)。
+
+## Donate
+
+如果这个工具帮到了你的投研工作流，欢迎请作者喝杯咖啡 ☕
+
+<p align="center">
+  <img src="./assets/wechat-sponsor.jpg" width="240" alt="微信赞赏码">
+</p>
+<p align="center">
+  <a href="https://ifdian.net/a/simonlin">爱发电</a> ·
+  <a href="https://buymeacoffee.com/simonlin1212">Buy Me a Coffee</a>
+</p>
+
+> 想要什么功能？欢迎开 [Issue](https://github.com/simonlin1212/tradingagents-astock/issues) 提需求，赞助者的 Issue 优先处理。
+
+---
 
 ## 免责声明
 
