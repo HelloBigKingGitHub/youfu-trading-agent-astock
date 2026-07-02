@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [v0.3.0] - 2026-07-XX
+
+### 新增
+- **日志监控模块** — 按分析任务持久化全部 LangGraph stream chunks
+  - `backend/core/log_store.py` — `LogStore`（读）+ `LogWriter`（写）+ dataclass
+  - `web/runner.py` — `_run()` stream 循环集成 LogWriter
+  - `web/components/logs_panel.py` — UI 主组件（GitHub PR 风格 1:3 双列）
+  - `web/styles/elements.css` — 13 个 `.bb-log-*` 类
+  - `cli/list_logs.py` — CLI 工具
+  - 侧边栏新增 `📋 日志` nav 按钮（6 按钮，第 5 个）
+- 存储结构: `~/.tradingagents/logs/{ticker}/{date}_run{NN}/` + 3 个 jsonl（按 type 分）+ meta.json
+- 兼容旧结构 `TradingAgentsStrategy_logs/full_states_log_*.json`（降级读 + `is_legacy=True` 标记）
+- chunk 分类启发式: 9 个 agent_output + 3 个 llm（debate judge / risk judge / trader）
+- Content 截断 50K/chunk 防 OOM
+- 文件锁 `fcntl.flock` per-append（防御性）
+- 写入失败 try/except 不 raise 阻断 LangGraph
+
+### 测试
+- 31 新测试（LogStore 16 + Runner 7 + UI 6 + CLI 3）全部通过
+- 263 已有测试无回归
+- pytest 总数: 263 passed, 2 skipped
+
 ## [Unreleased]
 
 ### Changed

@@ -38,6 +38,54 @@
 ### 中文股票名解析链路
 用户/LLM 输入 → `safe_ticker_component` 检测中文 → `resolve_ticker()` → `_build_name_code_map()`（mootdx 全市场映射，缓存）→ 返回 6 位代码
 
+## 日志监控模块 (v0.3.0)
+
+按分析任务持久化全部 LangGraph stream chunks，实时 + 历史查询。
+
+### 数据流
+```
+~/.tradingagents/logs/{ticker}/{date}_run{NN}/
+├── meta.json              # task metadata
+├── llm_messages.jsonl     # stream chunk type=llm
+├── tool_calls.jsonl       # stream chunk type=tool
+└── agent_outputs.jsonl    # stream chunk type=agent_output
+```
+
+兼容旧结构 `~/.tradingagents/logs/{ticker}/TradingAgentsStrategy_logs/full_states_log_*.json`（LogStore 降级读，标记 `is_legacy=True`）。
+
+### 后端模块
+- `backend/core/log_store.py` — `LogStore`（读）+ `LogWriter`（写）+ `TaskSummary` + `LogChunk` dataclass + `get_log_store()` 单例
+- `web/runner.py` — `_run()` stream 循环里调 `LogWriter.append_chunk()`，跑完 `finalize()`
+- `_classify_chunk()` — 把 LangGraph state snapshot 分类成 9 个 agent_output + 3 个 llm chunks（debate judge / risk judge / trader）
+
+### UI 入口
+侧边栏 6 按钮（第 5 个）：`📋 日志` → 切到 `render_logs_panel()`。布局 GitHub PR 风格：1:3 双列（左 ticker 列表，右 task 列表 + 展开 chunks）。
+
+### CLI
+```bash
+python -m cli.list_logs           # 所有 ticker
+python -m cli.list_logs 600595    # 单 ticker
+```
+
+### 关键文件
+| 文件 | 行数 | 作用 |
+|---|---|---|
+| `backend/core/log_store.py` | 458 | LogStore + LogWriter |
+| `web/runner.py` | 263 | stream 循环 hook |
+| `web/components/logs_panel.py` | 178 | UI 主组件 |
+| `cli/list_logs.py` | 45 | CLI |
+| `web/styles/elements.css` | +88 行 | 13 个 `.bb-log-*` 类 |
+| `tests/test_log_store.py` | 205 | 16 测试 |
+| `tests/test_log_streaming.py` | 149 | 7 测试 |
+| `tests/test_logs_panel.py` | 103 | 6 测试 |
+| `tests/test_cli_list_logs.py` | 63 | 3 测试 |
+| **总计** | **~1652** | — |
+
+### 测试
+- 31 新测试（LogStore 16 + Runner 7 + UI 6 + CLI 3）全部通过
+- 263 已有测试无回归
+- 所有测试用 `monkeypatch._LOGS_ROOT = tmp_path` 避免污染真实 `~/.tradingagents/`
+
 ## 已知问题与注意事项
 
 ### 依赖冲突（v0.2.6 已缓解）
