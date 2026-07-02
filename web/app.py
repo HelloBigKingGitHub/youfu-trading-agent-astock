@@ -268,8 +268,10 @@ def _render_idle_screen() -> None:
 
 _NAV_ITEMS: list[tuple[str, str, str]] = [
     ("📝", "分析", "analyze"),
+    ("📊", "批量分析", "batch"),
     ("📈", "板块轮动", "sector"),
     ("📋", "历史", "history"),
+    ("📋", "日志", "logs"),
     ("⚙️", "设置", "settings"),
 ]
 
@@ -381,8 +383,17 @@ elif tracker and tracker.error:
 elif nav == "sector":
     render_sector_panel()
 
+elif nav == "batch":
+    from web.components.batch_panel import render_batch_panel
+    render_batch_panel()
+
 elif nav == "history":
     render_history_panel()
+
+elif nav == "logs":
+    from web.components.logs_panel import render_logs_panel
+
+    render_logs_panel()
 
 elif nav == "settings":
     render_settings_panel()

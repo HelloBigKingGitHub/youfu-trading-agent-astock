@@ -869,30 +869,15 @@ section[data-testid="stSidebar"] {
     background: var(--bb-accent-soft) !important;
 }
 
-/* ── Polished logo box (v0.2.13) ────────────
-   Composition: contained box with version badge (top-right), two-tone
-   title, live indicator with pulsing dot, hairline divider, and GitHub
-   author link. Replaces the previous .bb-sidebar-logo wrapper. */
+/* ── Polished logo box ────────────
+   Composition: contained box with two-tone title, subtitle, an inline
+   muted build/version line, live indicator with pulsing dot, hairline
+   divider, and GitHub author link. Replaces the previous .bb-sidebar-logo
+   wrapper. The old absolutely-positioned .bb-logo-version badge has been
+   removed in favour of the inline .bb-logo-build row below. */
 .bb-logo-box {
-    position: relative;
     text-align: center;
     margin-top: 0.25rem;
-}
-.bb-logo-version {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    font-family: var(--font-mono);
-    font-size: 0.6rem;
-    font-weight: 600;
-    color: var(--bb-accent-bright);
-    background: var(--bb-accent-soft);
-    border: 1px solid rgba(77, 154, 255, 0.25);
-    border-radius: 4px;
-    padding: 2px 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    line-height: 1.2;
 }
 .bb-logo-box .bb-logo-text {
     font-family: var(--font-mono);
@@ -920,6 +905,17 @@ section[data-testid="stSidebar"] {
     text-transform: none;
     letter-spacing: 0.02em;
     font-weight: 400;
+}
+.bb-logo-build {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--bb-text-muted);
+    opacity: 0.7;
+    margin-top: 4px;
+    letter-spacing: 0.02em;
+    line-height: 1.3;
+    /* 短字符串(v0.2.13 · 2026-06-30),正常换行即可,不要 break-all(会切坏 project/date) */
+    overflow-wrap: anywhere;
 }
 .bb-logo-live {
     font-family: var(--font-mono);
@@ -1028,4 +1024,87 @@ section[data-testid="stSidebar"] {
     border-radius: var(--radius-md);
     margin: 1.5rem 0;
     line-height: 1.8;
+}
+
+/* ── Logs panel (added in v0.3.0) ─────────────────────────────────── */
+
+/* Ticker card (left column) */
+.bb-log-ticker-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+.bb-log-ticker-card:hover {
+    border-color: var(--bb-accent-dim);
+}
+.bb-log-ticker-card--active {
+    border-color: var(--bb-accent);
+    box-shadow: 0 0 0 1px var(--bb-accent-glow);
+}
+.bb-log-ticker-card-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+.bb-log-ticker-name {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.bb-log-ticker-count {
+    font-size: 0.7rem;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+}
+
+/* Task meta table */
+.bb-log-meta {
+    background: var(--bg-base);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+.bb-log-meta > div { margin: 2px 0; }
+.bb-log-meta b { color: var(--text-primary); }
+
+/* Chunk cards (right column) */
+.bb-log-chunk-header {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--bb-accent-bright);
+    margin-bottom: 4px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border-1);
+}
+.bb-log-chunk-sep {
+    height: 8px;
+}
+
+/* Running task banner */
+.bb-log-running-card {
+    background: var(--bb-accent-soft);
+    border: 1px solid var(--bb-accent-dim);
+    border-radius: var(--radius-md);
+    padding: 12px 16px;
+    margin-bottom: 12px;
+}
+.bb-log-running-stages {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin: 4px 0;
+}
+.bb-log-running-stats {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-tertiary);
 }
