@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import sys
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 from backend.core.history_store import get_history_store
+from backend.core.log_store import LogChunk, LogWriter
 from web.progress import PIPELINE_STAGES, ProgressTracker
+
+logger = logging.getLogger(__name__)
 
 _history_store = get_history_store()
 _RESULTS_DIR = Path.home() / ".tradingagents" / "logs"
@@ -94,34 +98,138 @@ def _run(ticker: str, trade_date: str, config: dict, tracker: ProgressTracker, a
     init_state = graph.propagator.create_initial_state(ticker, trade_date)
     args = graph.propagator.get_graph_args(callbacks=[stats])
 
+    # Init log writer (creates task dir + meta.json)
+    log_writer = LogWriter(analysis_id, ticker, trade_date)
     last_chunk: dict[str, Any] = {}
+    last_stats: dict = {"llm_calls": 0, "tool_calls": 0, "tokens_in": 0, "tokens_out": 0}
+    completed_stages: list[str] = []
 
-    for chunk in graph.graph.stream(init_state, **args):
-        last_chunk = chunk
-        _detect_completed_stages(chunk, tracker)
-        _infer_active_stage(tracker)
+    try:
+        for chunk in graph.graph.stream(init_state, **args):
+            last_chunk = chunk
 
-        s = stats.get_stats()
-        tracker.update_stats(s["llm_calls"], s["tool_calls"], s["tokens_in"], s["tokens_out"])
+            # === 现有逻辑 (不动) ===
+            _detect_completed_stages(chunk, tracker)
+            _infer_active_stage(tracker)
+            s = stats.get_stats()
+            tracker.update_stats(s["llm_calls"], s["tool_calls"], s["tokens_in"], s["tokens_out"])
+            last_stats = s
 
-    signal = graph.process_signal(last_chunk.get("final_trade_decision", ""))
+            # === 新增: 写 log chunks (try/except 不 raise) ===
+            try:
+                for log_chunk in _classify_chunk(chunk, last_stats):
+                    log_writer.append_chunk(log_chunk)
+            except Exception as e:
+                logger.warning("LogWriter.append_chunk failed: %s", e)
 
-    graph.ticker = ticker
-    graph._log_state(trade_date, last_chunk)
+            # 阶段完成时更新 meta
+            for stage in tracker.completed_stages:
+                if stage not in completed_stages:
+                    completed_stages.append(stage)
+            log_writer.update_stages(completed_stages)
 
-    tracker.mark_complete(last_chunk, signal)
+        signal = graph.process_signal(last_chunk.get("final_trade_decision", ""))
 
-    # Save "completed" history entry via unified store
-    elapsed = time.time() - tracker.start_time
-    _history_store.mark_complete(
-        analysis_id,
-        signal=signal,
-        elapsed=elapsed,
-        completed_stages=list(tracker.completed_stages),
+        # 现有 final state 写盘 (保持)
+        graph.ticker = ticker
+        graph._log_state(trade_date, last_chunk)
+
+        tracker.mark_complete(last_chunk, signal)
+        elapsed = time.time() - tracker.start_time
+        _history_store.mark_complete(
+            analysis_id,
+            signal=signal,
+            elapsed=elapsed,
+            completed_stages=list(tracker.completed_stages),
+        )
+        # Set the results path so report viewer can find the full log
+        results_path = str(_RESULTS_DIR / ticker / "TradingAgentsStrategy_logs" / f"full_states_log_{trade_date}.json")
+        _history_store.set_results_path(analysis_id, results_path)
+
+        # === 新增: finalize log writer ===
+        log_writer.finalize(signal=signal, elapsed_sec=elapsed,
+                            completed_stages=completed_stages)
+
+    except Exception as exc:
+        tracker.mark_error(str(exc))
+        elapsed = time.time() - tracker.start_time
+        _history_store.mark_error(analysis_id, str(exc), elapsed=elapsed)
+        # === 新增: error finalize ===
+        try:
+            log_writer.finalize(signal="", elapsed_sec=elapsed, error=str(exc))
+        except Exception:
+            pass
+        raise
+
+
+_KEY_TO_AGENT_NAME = {
+    "market_report": "market_analyst",
+    "sentiment_report": "social_analyst",
+    "news_report": "news_analyst",
+    "fundamentals_report": "fundamentals_analyst",
+    "policy_report": "policy_analyst",
+    "hot_money_report": "hot_money_tracker",
+    "lockup_report": "lockup_monitor",
+    "investment_plan": "research_manager",
+    "final_trade_decision": "risk_manager",
+}
+
+
+def _classify_chunk(chunk: dict[str, Any], stats: dict) -> Iterator[LogChunk]:
+    """Yield LogChunks for a single LangGraph state snapshot.
+
+    Heuristic:
+    - agent_output fields (9 keys): → 1 agent_output chunk each
+    - investment_debate_state / risk_debate_state with judge_decision: → 1 llm chunk
+    - trader_investment_plan: → 1 llm chunk
+    """
+    now = time.time()
+
+    AGENT_OUTPUT_KEYS = (
+        "market_report", "sentiment_report", "news_report",
+        "fundamentals_report", "policy_report", "hot_money_report", "lockup_report",
+        "investment_plan", "final_trade_decision",
     )
-    # Set the results path so report viewer can find the full log
-    results_path = str(_RESULTS_DIR / ticker / "TradingAgentsStrategy_logs" / f"full_states_log_{trade_date}.json")
-    _history_store.set_results_path(analysis_id, results_path)
+    for key in AGENT_OUTPUT_KEYS:
+        if key in chunk and chunk[key]:
+            agent_name = _KEY_TO_AGENT_NAME.get(key, key)
+            yield LogChunk(
+                ts=now,
+                type="agent_output",
+                agent=agent_name,
+                report_key=key,
+                content=str(chunk[key])[:50000],
+            )
+
+    debate = chunk.get("investment_debate_state", {})
+    if isinstance(debate, dict) and debate.get("judge_decision"):
+        yield LogChunk(
+            ts=now,
+            type="llm",
+            agent="research_manager",
+            role="assistant",
+            content=str(debate["judge_decision"])[:50000],
+        )
+
+    risk = chunk.get("risk_debate_state", {})
+    if isinstance(risk, dict) and risk.get("judge_decision"):
+        yield LogChunk(
+            ts=now,
+            type="llm",
+            agent="risk_manager",
+            role="assistant",
+            content=str(risk["judge_decision"])[:50000],
+        )
+
+    trader_plan = chunk.get("trader_investment_plan", "")
+    if trader_plan:
+        yield LogChunk(
+            ts=now,
+            type="llm",
+            agent="trader",
+            role="assistant",
+            content=str(trader_plan)[:50000],
+        )
 
 
 def run_analysis_in_thread(
