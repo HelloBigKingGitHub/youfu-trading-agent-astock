@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [v0.4.0] - 2026-07-XX
+
+### 新增
+- **股价走势图面板** — A股 K 线图，实时更新 + 7 段时间范围
+  - `tradingagents/dataflows/a_stock.py` — push2his K 线 fallback（第 3 层，mootdx / sina 之后）
+  - `web/components/chart_panel.py` — 主 UI 组件（含 Lightweight Charts 4.1.3 CDN + D2 SSE 直连东财 trends2/sse）
+  - `web/styles/elements.css` — 6 个 `.bb-quote-*` 类
+  - 侧边栏新增 `📈 走势图` nav 按钮（7 按钮，第 6 个）
+  - 实时报价 banner（东财 push2 f43/f44/f45，30s 一次）
+  - 实时 K 线 update（浏览器 EventSource → push2his trends2/sse，CORS 验证通过）
+  - MA5/10/20 + 成交量 副图
+  - 时间范围：1d / 1w / 1m / 3m / 6m / 1y / all
+  - 缓存：`~/.tradingagents/cache/kline/{ticker}_{range}.csv`（24h TTL）
+
+### 测试
+- 13 新测试（push2his 6 + chart_panel 7）全部通过
+- 312 已有测试无回归
+
 ## [v0.3.0] - 2026-07-XX
 
 ### 新增

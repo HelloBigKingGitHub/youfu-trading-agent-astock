@@ -6,7 +6,7 @@
 - **仓库**: https://github.com/HelloBigKingGitHub/youfu-trading-agent-astock
 - **协议**: Apache 2.0
 - **Python**: >=3.10
-- **当前版本**: 0.2.14
+- **当前版本**: 0.4.0
 
 ## 架构
 
@@ -86,6 +86,37 @@ python -m cli.list_logs 600595    # 单 ticker
 - 263 已有测试无回归
 - 所有测试用 `monkeypatch._LOGS_ROOT = tmp_path` 避免污染真实 `~/.tradingagents/`
 
+## 股价走势图面板 (v0.4.0)
+
+A 股股价 K 线图，实时更新 + 历史查询。
+
+### 数据流
+- **3-fallback 历史 K 线** (`get_stock_data`)：mootdx TCP → sina HTTP → push2his HTTP
+- **实时报价**：东财 push2 f43/f44/f45（走 `_em_get` 节流）
+- **实时 K 线**：浏览器直连 push2his `trends2/sse` SSE（D2 集成，CORS 验证通过）
+
+### 后端模块
+- `tradingagents/dataflows/a_stock.py` — `_push2his_kline_fallback` 新增（push2his HTTP），`get_stock_data` 加第 3 层 fallback
+- `web/components/chart_panel.py` — `render_chart_panel` + 6 helpers
+- `~/.tradingagents/cache/kline/{ticker}_{range}.csv` — 24h CSV cache
+
+### UI 入口
+侧边栏 7 按钮（第 6 个）：`📈 走势图` → 切到 `render_chart_panel()`。顶部 ticker input + 7 时间范围（1d/1w/1m/3m/6m/1y/all），实时报价 banner，K 线 + MA5/10/20 + 成交量 副图（Lightweight Charts CDN v4.1.3）。
+
+### 关键文件
+| 文件 | 行数 | 作用 |
+|---|---|---|
+| `web/components/chart_panel.py` | 313 | 主组件（含 SSE realtime） |
+| `tradingagents/dataflows/a_stock.py` | +88 | push2his fallback |
+| `tests/test_push2his_kline.py` | 145 | 6 测试 |
+| `tests/test_chart_panel.py` | 236 | 7 测试 |
+| **总计** | **~782** | - |
+
+### 测试
+- 13 新测试（push2his 6 + chart_panel 7）全部通过
+- 312 已有测试无回归
+- D2 SSE 集成：CORS 验证（`Access-Control-Allow-Origin: http://localhost:8501`）
+
 ## 已知问题与注意事项
 
 ### 依赖冲突（v0.2.6 已缓解）
@@ -120,3 +151,17 @@ deepseek-v4-flash 等模型在 tool call 时可能返回中文股票名而非 6 
 
 ## 相关项目
 - 上游 [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) — 原版框架
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues (`HelloBigKingGitHub/youfu-trading-agent-astock`) via the `gh` CLI. External pull requests are also a triage surface. The top-level `issues/` folder is a separate post-mortem archive, not the live tracker. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
