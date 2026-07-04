@@ -8,8 +8,8 @@ Data flow
 1. Python side (``_get_historical_kline``): 3-tier fallback via
    ``get_stock_data`` (mootdx → sina → push2his) → 24h CSV cache
    (``~/.tradingagents/cache/kline/{ticker}_{rng}.csv``).
-2. Real-time quote (``_get_realtime_quote``): single ``push2/stock/get`` call,
-   rendered as ``bb-quote-banner`` HTML.
+2. Real-time quote (``_get_realtime_quote``): single ``push2his/trends2/sse`` call
+   (``push2`` 被 FlClash 阻断, 改走 ``push2his``), rendered as ``bb-quote-banner`` HTML.
 3. Browser side (``_render_lightweight_chart_with_sse``): Lightweight Charts v4
    embeds historical K-line + MA5/10/20 + volume, then opens an ``EventSource``
    to ``push2his.eastmoney.com/api/qt/stock/trends2/sse`` for live updates
@@ -20,12 +20,16 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+
+logger = logging.getLogger(__name__)
 
 
 _LIGHTWEIGHT_CDN = (
@@ -66,11 +70,12 @@ def render_chart_panel() -> None:
         st.info("请输入 6 位股票代码 (例: 600595)")
         return
 
-    # 2. Real-time quote banner (走 push2/get 一次性)
+    # 2. Real-time quote banner (走 push2his trends2/sse 一次性)
     try:
         quote = _get_realtime_quote(ticker)
         _render_quote_banner(quote)
     except Exception as exc:
+        logger.warning("_get_realtime_quote failed for %s: %s", ticker, exc, exc_info=True)
         st.warning(f"实时报价拉取失败: {exc}")
 
     # 3. K-line + MA + volume + SSE realtime
@@ -89,26 +94,54 @@ def render_chart_panel() -> None:
 
 
 def _get_realtime_quote(ticker: str) -> dict:
-    """Fetch realtime quote from 东财 push2 (走 _em_get 节流)."""
+    """Fetch realtime quote from 东财 push2his trends2/sse.
+
+    push2.eastmoney.com/api/qt/stock/get 在 FlClash 代理环境被阻断, 改走
+    push2his (CORS-verified, 与浏览器 SSE 实时推送共用同一域). trends2/sse 返回的
+    ``trends`` 数组最末一行的 ``close`` 字段即当前价, 顶层 ``preClose`` 即昨收.
+
+    Returns dict with: ticker, price, change_pct, change_amount, timestamp.
+    """
     from tradingagents.dataflows.a_stock import _em_get
 
     secid_prefix = "1." if ticker.startswith("6") else "0."
     secid = f"{secid_prefix}{ticker}"
 
-    url = "https://push2.eastmoney.com/api/qt/stock/get"
+    url = "https://push2his.eastmoney.com/api/qt/stock/trends2/sse"
     params = {
         "secid": secid,
-        "ut": "fa5fd1943c7b386a173a0153c803ac01",
-        "fields": "f43,f44,f45,f46,f60,f169,f170",
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+        "iscr": 0,
+        "ndays": 1,
     }
     r = _em_get(url, params=params, timeout=10)
     d = r.json().get("data", {})
 
+    trends = d.get("trends") or []
+    if not trends:
+        raise ValueError(f"push2his trends2/sse returned empty data for {ticker}")
+
+    last_line = trends[-1].split(",")
+    # 格式: "2026-07-03 14:55,open,close,high,low,volume,amount,avg"
+    if len(last_line) < 8:
+        raise ValueError(f"trends2/sse last trends line malformed for {ticker}: {last_line}")
+
+    price = float(last_line[2])  # close = current price
+    pre_close = d.get("preClose", 0)
+    if not pre_close:
+        # Fallback: 拿首行 open 作为昨收近似
+        first_line = trends[0].split(",")
+        pre_close = float(first_line[1]) if len(first_line) >= 2 else price
+
+    change_amount = round(price - pre_close, 3)
+    change_pct = round((price - pre_close) / pre_close * 100, 2) if pre_close else 0
+
     return {
         "ticker": ticker,
-        "price": d.get("f43", 0) / 100,         # f43 单位是分
-        "change_pct": d.get("f170", 0) / 100,
-        "change_amount": d.get("f169", 0) / 100,
+        "price": price,
+        "change_pct": change_pct,
+        "change_amount": change_amount,
         "timestamp": time.time(),
     }
 

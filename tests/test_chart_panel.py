@@ -96,12 +96,21 @@ def test_render_chart_panel_calls_get_historical_kline(tmp_cache_dir, sample_kli
          patch("streamlit.selectbox", return_value="1m"), \
          patch("streamlit.button", return_value=False), \
          patch("streamlit.html") as mock_html, \
+         patch("streamlit.warning"), \
          patch(
              "tradingagents.dataflows.a_stock._em_get",
          ) as mock_em_get:
-        # Quote response (f43=price, f169=change_amt, f170=change_pct, all in 分)
+        # Quote response: push2his trends2/sse format (last row close = current price)
         mock_quote = MagicMock()
-        mock_quote.json.return_value = {"data": {"f43": 596, "f169": 19, "f170": 330}}
+        mock_quote.json.return_value = {
+            "data": {
+                "preClose": 5.75,
+                "trends": [
+                    "2026-07-03 09:30,5.75,5.80,5.82,5.74,5000,2880000.0,5.78",
+                    "2026-07-03 14:55,5.94,5.94,5.95,5.94,3922,2316678.00,5.922",
+                ],
+            }
+        }
         mock_em_get.return_value = mock_quote
 
         # get_stock_data returns CSV with header
