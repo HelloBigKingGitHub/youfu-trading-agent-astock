@@ -359,6 +359,71 @@ def _sina_kline_fallback(code: str, start_date: str = None, end_date: str = None
 
 
 # ---------------------------------------------------------------------------
+# Eastmoney push2his K-line fallback helper (added in v0.4.0)
+# ---------------------------------------------------------------------------
+
+
+def _push2his_kline_fallback(
+    code: str, start_date: str = None, end_date: str = None,
+) -> pd.DataFrame:
+    """Fetch daily K-line from 东财 push2his HTTP API as final fallback.
+
+    东财的 secid 格式: 沪市 1.600595, 深市 0.000001
+    Returns DataFrame with columns: Date, Open, High, Low, Close, Volume.
+    走 _em_get 节流 (复用 session + 默认 UA),避免被东财临时封 IP.
+    """
+    secid_prefix = "1." if code.startswith("6") else "0."
+    secid = f"{secid_prefix}{code}"
+
+    # 推算 datalen
+    if end_date and start_date:
+        days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
+        datalen = min(max(days + 30, 60), 800)
+    else:
+        datalen = 800  # 默认 3 年 (≈ 750 个交易日)
+
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    params = {
+        "secid": secid,
+        "ut": "fa5fd1943c7b386a173a0153c803ac01",
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        "klt": 101,         # 101 = 日 K
+        "fqt": 1,           # 1 = 前复权
+        "beg": start_date.replace("-", "") if start_date else "0",
+        "end": end_date.replace("-", "") if end_date else "20500101",
+        "lmt": datalen,
+    }
+
+    r = _em_get(url, params=params, timeout=15)
+    d = r.json()
+
+    klines = d.get("data", {}).get("klines", [])
+    if not klines:
+        return pd.DataFrame()
+
+    rows = []
+    for line in klines:
+        parts = line.split(",")
+        if len(parts) < 6:
+            continue
+        rows.append({
+            "Date": parts[0],
+            "Open": float(parts[1]),
+            "Close": float(parts[2]),
+            "High": float(parts[3]),
+            "Low": float(parts[4]),
+            "Volume": int(parts[5]),
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    df["Date"] = pd.to_datetime(df["Date"])
+    return df
+
+
+# ---------------------------------------------------------------------------
 # OHLCV loading with cache (mootdx -> CSV)
 # ---------------------------------------------------------------------------
 
@@ -473,14 +538,29 @@ def get_stock_data(
 
     except Exception as e:
         logger.warning("mootdx K-line failed for %s: %s, trying sina HTTP fallback", code, e)
-        # Fallback: Sina direct HTTP API
+        # Fallback 1: Sina direct HTTP API
         try:
             df = _sina_kline_fallback(code, start_date, end_date)
             if df.empty:
-                return "K线数据获取失败：mootdx和新浪备用源均不可用，请检查网络连接"
+                raise ValueError("sina returned empty")
             data_source = "sina HTTP (fallback)"
-        except Exception:
-            return "K线数据获取失败：mootdx和新浪备用源均不可用，请检查网络连接"
+        except Exception as e1:
+            logger.warning(
+                "sina fallback failed for %s: %s, trying push2his fallback",
+                code, e1,
+            )
+            # Fallback 2: push2his (added in v0.4.0)
+            try:
+                df = _push2his_kline_fallback(code, start_date, end_date)
+                if df.empty:
+                    raise ValueError("push2his returned empty")
+                data_source = "push2his HTTP (fallback)"
+            except Exception as e2:
+                logger.error(
+                    "All 3 OHLCV sources failed for %s: mootdx=%s sina=%s push2his=%s",
+                    code, e, e1, e2,
+                )
+                return "K线数据获取失败：mootdx/sina/push2his 均不可用，请检查网络连接"
 
     # Filter by date range
     start_dt = pd.to_datetime(start_date)

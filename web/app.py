@@ -5,7 +5,6 @@ from __future__ import annotations
 import html
 import os
 import sys
-import time
 from pathlib import Path
 
 import streamlit as st
@@ -26,6 +25,14 @@ from web.components.sector_panel import render_sector_panel  # noqa: E402
 from web.components.settings_panel import render_settings_panel  # noqa: E402
 from web.components.sidebar import render_sidebar, render_sidebar_logo  # noqa: E402
 from web.history import extract_signal, get_history, load_analysis  # noqa: E402
+from web.nav import (  # noqa: E402
+    VIEW_COMPLETE,
+    VIEW_ERROR,
+    VIEW_HISTORY,
+    VIEW_RUNNING,
+    plan_nav_click,
+    resolve_main_view,
+)
 from web.progress import ProgressTracker  # noqa: E402
 from web.runner import run_analysis_in_thread  # noqa: E402
 from web._signal_helpers import signal_badge as _signal_badge  # noqa: E402
@@ -272,6 +279,7 @@ _NAV_ITEMS: list[tuple[str, str, str]] = [
     ("📈", "板块轮动", "sector"),
     ("📋", "历史", "history"),
     ("📋", "日志", "logs"),
+    ("📈", "走势图", "chart"),
     ("⚙️", "设置", "settings"),
 ]
 
@@ -286,7 +294,11 @@ def _render_nav_buttons() -> None:
     Streamlit's narrow sidebar (~280px) cannot fit 4 button labels side
     by side without wrapping the Chinese text inside each button.
 
-    Click handler sets ``st.session_state["nav"]`` and reruns.
+    Click handler routes through ``plan_nav_click`` so navigating away from a
+    completed / errored report (or a historical-report overlay) dismisses that
+    sticky state — otherwise a lingering completed tracker would pin the main
+    area to the report and the nav could never switch (see web/nav.py). A
+    *running* analysis is preserved so its background thread stays tracked.
     """
     current = st.session_state.get("nav", "analyze")
     for icon, label, page in _NAV_ITEMS:
@@ -296,7 +308,12 @@ def _render_nav_buttons() -> None:
             type="primary" if current == page else "secondary",
             use_container_width=True,
         ):
-            st.session_state["nav"] = page
+            plan = plan_nav_click(page, st.session_state.get("tracker"))
+            st.session_state["nav"] = plan.nav
+            if plan.clear_viewing_history:
+                st.session_state["viewing_history"] = None
+            if plan.clear_tracker:
+                st.session_state.pop("tracker", None)
             st.rerun()
 
 
@@ -332,18 +349,48 @@ if start_req:
 
 # ── Main area dispatch ───────────────────────────────────────────────────────
 #
-# Modal states (viewing a report, analysis running/complete/errored) ALWAYS
-# win over the nav page so the user sees what they actually triggered. The
-# nav button is forced back to "analyze" in those branches so the sidebar
-# indicator stays consistent with what's on screen.
+# The view is decided by web.nav.resolve_main_view (a pure, unit-tested state
+# machine). A *running* analysis always wins. Terminal report states
+# (historical report / completed / errored) render ONLY on the analyze tab, so
+# selecting another nav page switches the main area instead of being trapped on
+# a sticky report.
 
 tracker: ProgressTracker | None = st.session_state.get("tracker")
 viewing_history: str | None = st.session_state.get("viewing_history")
 nav: str = st.session_state.get("nav", "analyze")
 
-# Modal state 1: Viewing a historical analysis
-if viewing_history:
+view = resolve_main_view(nav, tracker, viewing_history)
+
+# Running: show live progress in a self-refreshing fragment.
+#
+# We render the progress panel inside an ``st.fragment(run_every=2)`` instead
+# of the older ``time.sleep(2) + st.rerun()`` loop. The sleep blocked the
+# Streamlit script runner for the full 2 s on every poll; during long
+# analyses (15-25 s per CLAUDE.md, batch even longer) the script thread held
+# on long enough that the WebSocket ping (~10 s default) was missed and the
+# browser showed "Connection failed" — which users perceived as "the link
+# from the sector panel to the analyze page broke". A fragment re-executes
+# itself on a separate scheduler tick without blocking the main script, so
+# heartbeat traffic and other tabs keep flowing while progress refreshes.
+#
+# When the tracker flips to a terminal state inside the fragment (the
+# background thread just called ``mark_complete`` / ``mark_error``), we
+# explicitly rerun the parent so ``resolve_main_view`` re-renders the
+# completed report / error page instead of leaving the user stuck on the
+# progress view. ``run_every`` only refreshes the fragment itself.
+@st.fragment(run_every=2)
+def _running_view(tracker: ProgressTracker) -> None:
+    render_progress(tracker)
+    if not tracker.is_running:
+        st.rerun(scope="app")
+
+
+if view == VIEW_RUNNING:
     st.session_state["nav"] = "analyze"
+    _running_view(tracker)
+
+# Viewing a historical analysis (overlay on the analyze tab).
+elif view == VIEW_HISTORY:
     try:
         state = load_analysis(viewing_history)
         signal = extract_signal(state)
@@ -353,16 +400,8 @@ if viewing_history:
     except Exception as exc:
         st.error(f"加载失败: {exc}")
 
-# Modal state 2: Analysis running
-elif tracker and tracker.is_running:
-    st.session_state["nav"] = "analyze"
-    render_progress(tracker)
-    time.sleep(2)
-    st.rerun()
-
-# Modal state 3: Analysis complete
-elif tracker and tracker.is_complete:
-    st.session_state["nav"] = "analyze"
+# Completed analysis report.
+elif view == VIEW_COMPLETE:
     render_report(
         tracker.final_state,
         tracker.ticker,
@@ -371,34 +410,38 @@ elif tracker and tracker.is_complete:
         elapsed=tracker.elapsed,
     )
 
-# Modal state 4: Analysis errored
-elif tracker and tracker.error:
-    st.session_state["nav"] = "analyze"
+# Errored analysis.
+elif view == VIEW_ERROR:
     st.error(f"分析失败: {tracker.error}")
     if st.button("重试"):
         st.session_state.pop("tracker", None)
         st.rerun()
 
-# Nav dispatch (no modal state active)
-elif nav == "sector":
+# Nav pages.
+elif view == "sector":
     render_sector_panel()
 
-elif nav == "batch":
+elif view == "batch":
     from web.components.batch_panel import render_batch_panel
     render_batch_panel()
 
-elif nav == "history":
+elif view == "history":
     render_history_panel()
 
-elif nav == "logs":
+elif view == "logs":
     from web.components.logs_panel import render_logs_panel
 
     render_logs_panel()
 
-elif nav == "settings":
+elif view == "chart":
+    from web.components.chart_panel import render_chart_panel
+
+    render_chart_panel()
+
+elif view == "settings":
     render_settings_panel()
 
-# Default: analyze idle screen
+# Default: analyze idle screen (VIEW_IDLE).
 else:
     try:
         _render_idle_screen()
