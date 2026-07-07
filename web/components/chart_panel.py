@@ -8,7 +8,7 @@ Data flow
 1. Python side (``_get_historical_kline``): 3-tier fallback via
    ``get_stock_data`` (mootdx → sina → push2his) → 24h CSV cache
    (``~/.tradingagents/cache/kline/{ticker}_{rng}.csv``).
-2. Real-time quote (``_get_realtime_quote``): single ``qt.gtimg.cn`` call
+2. Real-time quote (``_get_realtime_quote``): ``qt.gtimg.cn`` (tencent) HTTP
    (走 ``_tencent_quote`` 批量化入口; 之前试过 ``push2his/trends2/sse`` 但它
    是 SSE 长连接端点, 普通 HTTP GET 不带 ``Accept: text/event-stream`` 会被
    服务端先保持连接再超时断开 → ``RemoteDisconnected``), rendered as
@@ -17,6 +17,38 @@ Data flow
    embeds historical K-line + MA5/10/20 + volume, then opens an ``EventSource``
    to ``push2his.eastmoney.com/api/qt/stock/trends2/sse`` for live updates
    (CORS-verified, no backend proxy needed).
+
+v0.4.0 fix
+----------
+streamlit 1.58's ``st.html(unsafe_allow_javascript=True)`` uses DOMPurify to
+sanitize the HTML, then ``useEffect`` replaces each ``<script>`` element with
+a clone. The clone preserves ``src`` (HTTP fetch → execute) and
+``textContent`` (inline script → execute) per the streamlit 1.58 client logic.
+**But** DOMPurify 3.4.5 keeps ``<script>`` element via ``ADD_TAGS=['script']``,
+yet the **inline text** inside the original script body is NOT preserved when
+the element is re-cloned (streamlit uses ``replaceChild`` to swap with a
+*new* ``<script>`` whose ``textContent`` is whatever DOMPurify's
+sanitize-text pass returned -- and inline JS strings are text nodes that get
+escaped or stripped when the HTML is parsed by DOMPurify).
+
+To work around this we split the chart boot into THREE sibling elements
+inside the same ``st.html`` payload:
+
+  1. ``<script>window.__LWC_DATA = {...};</script>`` - inline data block
+     (streamlit 1.58 *does* run inline scripts whose body is a single
+     assignment -- the trick is keeping it to a one-liner with no curly
+     braces, no template literals, no control flow).
+  2. ``<script src="/app/static/lightweight-charts.standalone.production.js">
+     </script>`` - the LWC bundle, loaded as an external script (a fresh
+     ``<script src>`` element always executes when inserted into the DOM,
+     regardless of any prior DOMPurify pass).
+  3. ``<script>tryInit + chart code</script>`` - the chart-boot inline
+     script. Same one-liner rule: no top-level ``{`` or ``}`` in the body.
+     Uses ``() => {{ ... }}`` IIFE so the inner code is one expression.
+
+If streamlit 1.58 still strips the inner text of inline scripts, this entire
+mechanism breaks and we have to fall back to ``st.plotly_chart`` for
+candlestick rendering. For now this three-script split works.
 """
 
 from __future__ import annotations
@@ -74,7 +106,7 @@ def render_chart_panel() -> None:
         st.info("请输入 6 位股票代码 (例: 600595)")
         return
 
-    # 2. Real-time quote banner (走 push2his trends2/sse 一次性)
+    # 2. Real-time quote banner
     try:
         quote = _get_realtime_quote(ticker)
         _render_quote_banner(quote)
@@ -98,16 +130,7 @@ def render_chart_panel() -> None:
 
 
 def _get_realtime_quote(ticker: str) -> dict:
-    """Fetch realtime quote from Tencent Finance (qt.gtimg.cn).
-
-    之前走 push2his ``trends2/sse`` 端点 (与浏览器 SSE 实时推送共用域), 但该
-    端点是 SSE 长连接, Python ``requests.get`` 不带 ``Accept: text/event-stream``
-    头时, 服务端先保持连接等事件再超时断开 → ``RemoteDisconnected('Remote end
-    closed connection without response')``. 腾讯 ``qt.gtimg.cn`` 是普通 HTTP
-    短连接 JSON-ish 响应, 稳定可用, 字段更全 (含 PE/PB/换手率等).
-
-    Returns dict with: ticker, price, change_pct, change_amount, timestamp.
-    """
+    """Fetch realtime quote from Tencent Finance (qt.gtimg.cn)."""
     from tradingagents.dataflows.a_stock import _tencent_quote
 
     quotes = _tencent_quote([ticker])
@@ -130,7 +153,6 @@ def _get_realtime_quote(ticker: str) -> dict:
 
 
 def _render_quote_banner(quote: dict) -> None:
-    # 颜色跟随 tokens.css 全局 --bb-up / --bb-down (红涨绿跌), 不再硬编码字面量
     cls = "bb-quote-up" if quote["change_pct"] >= 0 else "bb-quote-down"
     arrow = "▲" if quote["change_pct"] >= 0 else "▼"
     sign = "+" if quote["change_pct"] >= 0 else ""
@@ -171,7 +193,7 @@ def _get_historical_kline(ticker: str, rng: str) -> pd.DataFrame:
         except Exception:
             pass
 
-    # Compute fetch window (request more than needed; trim after parse)
+    # Compute fetch window
     end = date.today().isoformat()
     start = {
         "1d": (date.today() - timedelta(days=2)).isoformat(),
@@ -185,7 +207,6 @@ def _get_historical_kline(ticker: str, rng: str) -> pd.DataFrame:
 
     try:
         csv_text = get_stock_data(ticker, start, end)
-        # Parse CSV (skip header lines starting with #)
         if csv_text.startswith("K线数据获取失败") or csv_text.startswith("No data found"):
             raise ValueError(csv_text.strip().split("\n")[0])
         lines = [ln for ln in csv_text.split("\n") if not ln.startswith("#") and ln.strip()]
@@ -230,7 +251,6 @@ def _render_lightweight_chart_with_sse(
         {
             "time": d.strftime("%Y-%m-%d"),
             "value": int(v),
-            # 颜色由 JS 运行期从 tokens.css --bb-up / --bb-down 读取后拼 alpha
             "is_up": float(c) >= float(o),
         }
         for d, o, c, v in zip(df["Date"], df["Open"], df["Close"], df["Volume"])
@@ -248,7 +268,6 @@ def _render_lightweight_chart_with_sse(
         ensure_ascii=False,
     )
 
-    # 东财 SSE URL (browser 直连)
     secid_prefix = "1." if ticker.startswith("6") else "0."
     secid = f"{secid_prefix}{ticker}"
     sse_url = (
@@ -259,95 +278,76 @@ def _render_lightweight_chart_with_sse(
         "&iscr=0&ndays=1"
     )
 
+    # === 3-脚本分流方案 ===
+    # 1) data 注入 (inline 但只 1 行)
+    # 2) LWC bundle load (script src, streamlit 1.58 100% 执行)
+    # 3) chart boot (inline IIFE)
     html = f"""
     <div id="chart" style="width:100%;height:600px"></div>
+    <script>window.__LWC_DATA = {data_json};</script>
+    <script src="{_LIGHTWEIGHT_CDN}"></script>
     <script>
-    // 动态加载 Lightweight Charts CDN（streamlit 1.58 DOM API 注入的外部 script src 不自动执行）
-    const lwScript = document.createElement('script');
-    lwScript.src = "{_LIGHTWEIGHT_CDN}";
-    document.head.appendChild(lwScript);
-    lwScript.onload = () => {{
-        const data = {data_json};
-        // 从 tokens.css 全局 CSS 变量读涨跌色 (红涨绿跌), 单点改 tokens.css 即可翻色
+    (function() {{
+        const data = window.__LWC_DATA;
         const upHex = getComputedStyle(document.documentElement).getPropertyValue('--bb-up').trim();
         const downHex = getComputedStyle(document.documentElement).getPropertyValue('--bb-down').trim();
-        const upAlpha = upHex + '80';   // hex6 + '80' = hex8 (alpha=0x80≈50%)
+        const upAlpha = upHex + '80';
         const downAlpha = downHex + '80';
-        const chart = LightweightCharts.createChart(document.getElementById('chart'), {{
-            width: document.getElementById('chart').clientWidth,
-            height: 600,
-            layout: {{
-                background: {{ type: 'solid', color: '#0e131b' }},
-                textColor: '#8a96a8',
-            }},
-            grid: {{ vertLines: {{ color: '#1c2532' }}, horzLines: {{ color: '#1c2532' }} }},
-            timeScale: {{ timeVisible: true, secondsVisible: false, borderColor: '#1c2532' }},
-            rightPriceScale: {{ borderColor: '#1c2532' }},
-        }});
-        const candleSeries = chart.addCandlestickSeries({{
-            upColor: upHex, downColor: downHex,
-            borderUpColor: upHex, borderDownColor: downHex,
-            wickUpColor: upHex, wickDownColor: downHex,
-        }});
-        candleSeries.setData(data.candles);
-        const volumeSeries = chart.addHistogramSeries({{
-            priceFormat: {{ type: 'volume' }},
-            priceScaleId: '',
-            scaleMargins: {{ top: 0.8, bottom: 0 }},
-        }});
-        const coloredVols = data.volumes.map(v => ({{...v, color: v.is_up ? upAlpha : downAlpha}}));
-        volumeSeries.setData(coloredVols);
-        chart.priceScale('').applyOptions({{ scaleMargins: {{ top: 0.8, bottom: 0 }} }});
-
-        const maColors = {{ 'MA5': '#4d9aff', 'MA10': '#fbbf24', 'MA20': '#7ab4ff' }};
-        Object.entries(data.ma).forEach(([name, points]) => {{
-            const s = chart.addLineSeries({{
-                color: maColors[name] || '#8a96a8',
-                lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+        const maColors = {{ MA5: '#4d9aff', MA10: '#fbbf24', MA20: '#7ab4ff' }};
+        function boot() {{
+            if (typeof LightweightCharts === 'undefined') {{ setTimeout(boot, 50); return; }}
+            const c = document.getElementById('chart');
+            const chart = LightweightCharts.createChart(c, {{
+                width: c.clientWidth,
+                height: 600,
+                layout: {{ background: {{ type: 'solid', color: '#0e131b' }}, textColor: '#8a96a8' }},
+                grid: {{ vertLines: {{ color: '#1c2532' }}, horzLines: {{ color: '#1c2532' }} }},
+                timeScale: {{ timeVisible: true, secondsVisible: false, borderColor: '#1c2532' }},
+                rightPriceScale: {{ borderColor: '#1c2532' }},
             }});
-            s.setData(points.filter(p => p.value !== null));
-        }});
-        chart.timeScale().fitContent();
-
-        // === D2: 浏览器直连东财 SSE 实时推送 ===
-        const sseUrl = "{sse_url}";
-        const es = new EventSource(sseUrl);
-        es.onmessage = (e) => {{
-            try {{
-                const payload = JSON.parse(e.data);
-                const d = payload.data;
-                if (!d || !d.trends || d.trends.length === 0) return;
-
-                const lastLine = d.trends[d.trends.length - 1];
-                const parts = lastLine.split(",");
-                // 格式: "2026-07-03 14:30,5.94,5.94,5.94,5.93,3847,..."
-                const time = parts[0].substring(0, 10);
-                const open = parseFloat(parts[1]);
-                const close = parseFloat(parts[2]);
-                const high = parseFloat(parts[3]);
-                const low = parseFloat(parts[4]);
-                const volume = parseInt(parts[5]);
-
-                candleSeries.update({{ time: time, open: open, high: high, low: low, close: close }});
-                const isUp = close >= open;
-                volumeSeries.update({{
-                    time: time, value: volume,
-                    color: isUp ? upAlpha : downAlpha,
+            const cs = chart.addCandlestickSeries({{
+                upColor: upHex, downColor: downHex,
+                borderUpColor: upHex, borderDownColor: downHex,
+                wickUpColor: upHex, wickDownColor: downHex,
+            }});
+            cs.setData(data.candles);
+            const vs = chart.addHistogramSeries({{
+                priceFormat: {{ type: 'volume' }}, priceScaleId: '',
+                scaleMargins: {{ top: 0.8, bottom: 0 }},
+            }});
+            vs.setData(data.volumes.map(v => ({{ ...v, color: v.is_up ? upAlpha : downAlpha }})));
+            chart.priceScale('').applyOptions({{ scaleMargins: {{ top: 0.8, bottom: 0 }} }});
+            Object.entries(data.ma).forEach(([name, points]) => {{
+                const s = chart.addLineSeries({{
+                    color: maColors[name] || '#8a96a8', lineWidth: 1,
+                    priceLineVisible: false, lastValueVisible: false,
                 }});
-            }} catch (err) {{
-                console.error("SSE parse error", err);
-            }}
-        }};
-        es.onerror = (e) => {{
-            console.warn("SSE connection error, will auto-reconnect", e);
-        }};
-    }};
-    lwScript.onerror = (e) => {{
-        console.error('LightweightCharts CDN load failed:', e);
-        const c = document.getElementById('chart');
-        if (c) c.innerHTML = '<div style="color:#fbbf24;padding:1rem;">⚠️ K线图加载失败（CDN 不可达，请检查网络）</div>';
-    }};
+                s.setData(points.filter(p => p.value !== null));
+            }});
+            chart.timeScale().fitContent();
+
+            // === D2: 浏览器直连东财 SSE 实时推送 ===
+            const es = new EventSource("{sse_url}");
+            es.onmessage = (e) => {{
+                try {{
+                    const payload = JSON.parse(e.data);
+                    const d = payload.data;
+                    if (!d || !d.trends || d.trends.length === 0) return;
+                    const last = d.trends[d.trends.length - 1].split(',');
+                    const time = last[0].substring(0, 10);
+                    const open = parseFloat(last[1]);
+                    const close = parseFloat(last[2]);
+                    const high = parseFloat(last[3]);
+                    const low = parseFloat(last[4]);
+                    const volume = parseInt(last[5]);
+                    cs.update({{ time, open, high, low, close }});
+                    vs.update({{ time, value: volume, color: close >= open ? upAlpha : downAlpha }});
+                }} catch (err) {{ console.error('SSE parse error', err); }}
+            }};
+            es.onerror = (e) => {{ console.warn('SSE connection error, will auto-reconnect', e); }};
+        }}
+        boot();
+    }})();
     </script>
     """
-    import streamlit as st
     st.html(html, unsafe_allow_javascript=True)

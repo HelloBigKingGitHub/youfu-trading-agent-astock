@@ -98,20 +98,20 @@ def test_render_chart_panel_calls_get_historical_kline(tmp_cache_dir, sample_kli
          patch("streamlit.html") as mock_html, \
          patch("streamlit.warning"), \
          patch(
-             "tradingagents.dataflows.a_stock._em_get",
-         ) as mock_em_get:
-        # Quote response: push2his trends2/sse format (last row close = current price)
-        mock_quote = MagicMock()
-        mock_quote.json.return_value = {
-            "data": {
-                "preClose": 5.75,
-                "trends": [
-                    "2026-07-03 09:30,5.75,5.80,5.82,5.74,5000,2880000.0,5.78",
-                    "2026-07-03 14:55,5.94,5.94,5.95,5.94,3922,2316678.00,5.922",
-                ],
-            }
+             "tradingagents.dataflows.a_stock._tencent_quote",
+         ) as mock_tencent:
+        # Quote response: qt.gtimg.cn format (parsed by _tencent_quote)
+        mock_tencent.return_value = {
+            "600595": {
+                "name": "中孚实业",
+                "price": 5.94,
+                "last_close": 5.75,
+                "open": 5.80,
+                "change_pct": 3.30,
+                "high": 5.95,
+                "low": 5.74,
+            },
         }
-        mock_em_get.return_value = mock_quote
 
         # get_stock_data returns CSV with header
         csv_header = (
@@ -158,7 +158,8 @@ def test_render_quote_banner_renders_correct_colors():
             "timestamp": 1718000000.0,
         })
         call_str = str(mock_html.call_args)
-        assert "#00d68f" in call_str  # green
+        # bb-quote-up class is applied (color comes from --bb-up via CSS var)
+        assert "bb-quote-up" in call_str
         assert "▲" in call_str
         assert "+3.30%" in call_str or "3.30%" in call_str
 
@@ -172,7 +173,8 @@ def test_render_quote_banner_renders_correct_colors():
             "timestamp": 1718000000.0,
         })
         call_str = str(mock_html.call_args)
-        assert "#ff4d6d" in call_str  # red
+        # bb-quote-down class is applied (color comes from --bb-down via CSS var)
+        assert "bb-quote-down" in call_str
         assert "▼" in call_str
         assert "-2.10%" in call_str
 
@@ -186,9 +188,9 @@ def test_render_lightweight_chart_contains_required_elements(sample_kline_df):
         _render_lightweight_chart_with_sse(sample_kline_df, mas, "600595", "1m")
 
         call_str = str(mock_html.call_args)
-        # CDN
-        assert "lightweight-charts@4.1.3" in call_str
-        assert "unpkg.com" in call_str
+        # Local static serving (replaces earlier CDN approach due to FlClash
+        # blocking unpkg.com at the SSL layer)
+        assert "/app/static/lightweight-charts" in call_str
         # Chart container + candle series
         assert '<div id="chart"' in call_str
         assert "addCandlestickSeries" in call_str
