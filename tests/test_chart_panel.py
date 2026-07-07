@@ -87,7 +87,8 @@ def test_render_chart_panel_invalid_ticker_shows_info():
 
 
 def test_render_chart_panel_calls_get_historical_kline(tmp_cache_dir, sample_kline_df):
-    """Valid ticker → _get_historical_kline is called + chart rendered via st.html."""
+    """Valid ticker → _get_historical_kline is called + chart rendered via
+    streamlit-lightweight-charts (PyPI wrapper)."""
     cols_patch, _ = _patched_streamlit_columns()
     with cols_patch, \
          patch("streamlit.markdown"), \
@@ -95,12 +96,14 @@ def test_render_chart_panel_calls_get_historical_kline(tmp_cache_dir, sample_kli
          patch("streamlit.text_input", return_value="600595"), \
          patch("streamlit.selectbox", return_value="1m"), \
          patch("streamlit.button", return_value=False), \
-         patch("streamlit.html") as mock_html, \
+         patch("streamlit.html"), \
          patch("streamlit.warning"), \
          patch(
              "tradingagents.dataflows.a_stock._tencent_quote",
-         ) as mock_tencent:
-        # Quote response: qt.gtimg.cn format (parsed by _tencent_quote)
+         ) as mock_tencent, \
+         patch(
+             "web.components.chart_panel.renderLightweightCharts",
+         ) as mock_render_lwc:
         mock_tencent.return_value = {
             "600595": {
                 "name": "中孚实业",
@@ -113,7 +116,6 @@ def test_render_chart_panel_calls_get_historical_kline(tmp_cache_dir, sample_kli
             },
         }
 
-        # get_stock_data returns CSV with header
         csv_header = (
             "# Stock data for 600595 (A-stock) from 2026-06-01 to 2026-07-10\n"
             "# Total records: 30\n"
@@ -121,7 +123,7 @@ def test_render_chart_panel_calls_get_historical_kline(tmp_cache_dir, sample_kli
             "# Data retrieved on: 2026-07-10 09:00:00\n\n"
         )
         csv_body = "Date,Open,High,Low,Close,Volume\n"
-        for i, row in sample_kline_df.iterrows():
+        for _, row in sample_kline_df.iterrows():
             csv_body += f"{row['Date'].strftime('%Y-%m-%d')},{row['Open']},{row['High']},{row['Low']},{row['Close']},{row['Volume']}\n"
         with patch(
             "tradingagents.dataflows.a_stock.get_stock_data",
@@ -130,18 +132,24 @@ def test_render_chart_panel_calls_get_historical_kline(tmp_cache_dir, sample_kli
             from web.components.chart_panel import render_chart_panel
             render_chart_panel()
 
-            # get_stock_data called with ticker + start + end
             mock_get_stock.assert_called_once()
             args = mock_get_stock.call_args.args
             assert args[0] == "600595"
 
-            # st.html called at least twice (quote banner + chart)
-            assert mock_html.call_count >= 2
+            # renderLightweightCharts called with a list of panes
+            assert mock_render_lwc.call_count == 1
+            charts_arg = mock_render_lwc.call_args[0][0]
+            assert len(charts_arg) == 2  # main (candle+MA) + volume pane
 
-            # Chart HTML contains LightweightCharts CDN
-            chart_html = " ".join(str(c) for c in mock_html.call_args_list)
-            assert "lightweight-charts" in chart_html
-            assert "push2his.eastmoney.com" in chart_html
+            main_chart = charts_arg[0]
+            assert main_chart["chart"]["layout"]["background"]["color"] == "#0e131b"
+            # candle + MA5 + MA10 + MA20 = 4 series in main pane
+            assert len(main_chart["series"]) == 4
+            assert main_chart["series"][0]["type"] == "Candlestick"
+            assert main_chart["series"][1]["type"] == "Line"
+            assert main_chart["series"][1]["options"]["title"] == "MA5"
+            vol_chart = charts_arg[1]
+            assert vol_chart["series"][0]["type"] == "Histogram"
 
 
 def test_render_quote_banner_renders_correct_colors():
@@ -179,51 +187,67 @@ def test_render_quote_banner_renders_correct_colors():
         assert "-2.10%" in call_str
 
 
-def test_render_lightweight_chart_contains_required_elements(sample_kline_df):
-    """Chart HTML must include: CDN script, candleSeries, MA series, EventSource SSE."""
-    mas = {"MA5": sample_kline_df["Close"].rolling(5).mean()}
+def test_render_lwc_chart_contains_required_elements(sample_kline_df):
+    """Chart call must include: candle series, MA lines, volume histogram,
+    correct background color, and A-share color convention (red up / green
+    down)."""
+    with patch(
+        "web.components.chart_panel.renderLightweightCharts",
+    ) as mock_render_lwc:
+        from web.components.chart_panel import _render_lwc_chart
+        _render_lwc_chart(sample_kline_df, "600595", "1m")
 
-    with patch("streamlit.html") as mock_html:
-        from web.components.chart_panel import _render_lightweight_chart_with_sse
-        _render_lightweight_chart_with_sse(sample_kline_df, mas, "600595", "1m")
+        charts_arg = mock_render_lwc.call_args[0][0]
+        assert len(charts_arg) == 2
 
-        call_str = str(mock_html.call_args)
-        # Local static serving (replaces earlier CDN approach due to FlClash
-        # blocking unpkg.com at the SSL layer)
-        assert "/app/static/lightweight-charts" in call_str
-        # Chart container + candle series
-        assert '<div id="chart"' in call_str
-        assert "addCandlestickSeries" in call_str
-        # MA series
-        assert "addLineSeries" in call_str
-        assert "MA5" in call_str
-        # SSE realtime connection
-        assert "EventSource" in call_str
-        assert "push2his.eastmoney.com" in call_str
-        assert "/api/qt/stock/trends2/sse" in call_str
-        # secid for Shanghai
-        assert "secid=1.600595" in call_str
+        # Main pane: Candlestick + MA5 + MA10 + MA20
+        main_series = charts_arg[0]["series"]
+        assert main_series[0]["type"] == "Candlestick"
+        # Red up / green down for A-share
+        assert main_series[0]["options"]["upColor"] == "#ff4d6d"
+        assert main_series[0]["options"]["downColor"] == "#00d68f"
+        # MA lines
+        assert main_series[1]["options"]["title"] == "MA5"
+        assert main_series[2]["options"]["title"] == "MA10"
+        assert main_series[3]["options"]["title"] == "MA20"
+        # Background color = dark Bloomberg style
+        assert charts_arg[0]["chart"]["layout"]["background"]["color"] == "#0e131b"
+
+        # Volume pane
+        vol_series = charts_arg[1]["series"]
+        assert vol_series[0]["type"] == "Histogram"
+        # Volume has per-bar colors (one per row)
+        assert len(vol_series[0]["data"]) == len(sample_kline_df)
+        # First row color is either red or green (not a single value)
+        first_color = vol_series[0]["data"][0]["color"]
+        assert first_color in ("#ff4d6d", "#00d68f")
 
 
 def test_get_ma_computes_correct_moving_averages(sample_kline_df):
-    """_get_ma with [5, 10, 20] returns MA5/MA10/MA20 with correct rolling values."""
+    """_get_ma with [5, 10, 20] returns MA5/MA10/MA20 with correct rolling
+    values, skipping leading NaN values (returned as list of {time, value}
+    dicts ready for lightweight-charts).
+    """
     from web.components.chart_panel import _get_ma
 
     mas = _get_ma(sample_kline_df, [5, 10, 20])
     assert set(mas.keys()) == {"MA5", "MA10", "MA20"}
 
-    # MA5 at row index 4 = mean of first 5 closes
-    expected_ma5_at_4 = sample_kline_df["Close"].iloc[:5].mean()
-    assert mas["MA5"].iloc[4] == pytest.approx(expected_ma5_at_4)
+    # Each MA is a list of {time, value} dicts
+    assert isinstance(mas["MA5"], list)
+    assert all("time" in p and "value" in p for p in mas["MA5"])
 
-    # MA5 at row index 0-3 = NaN (not enough data)
-    assert pd.isna(mas["MA5"].iloc[0])
-    assert pd.isna(mas["MA5"].iloc[3])
-    assert not pd.isna(mas["MA5"].iloc[4])
+    # MA5 at row index 4 = mean of first 5 closes (first 4 are NaN, skipped)
+    expected_ma5_at_4 = round(sample_kline_df["Close"].iloc[:5].mean(), 3)
+    assert mas["MA5"][0]["value"] == pytest.approx(expected_ma5_at_4)
 
-    # MA20 at row 19 = mean of first 20 closes
-    expected_ma20_at_19 = sample_kline_df["Close"].iloc[:20].mean()
-    assert mas["MA20"].iloc[19] == pytest.approx(expected_ma20_at_19)
+    # MA20: skip first 19 NaN, first value is mean of first 20 closes
+    expected_ma20_at_19 = round(sample_kline_df["Close"].iloc[:20].mean(), 3)
+    assert mas["MA20"][0]["value"] == pytest.approx(expected_ma20_at_19)
+
+    # Number of valid points: total rows - (window - 1)
+    assert len(mas["MA5"]) == len(sample_kline_df) - 4  # 30 - (5-1)
+    assert len(mas["MA20"]) == len(sample_kline_df) - 19  # 30 - (20-1)
 
 
 def test_get_historical_kline_uses_cache(tmp_cache_dir, sample_kline_df):

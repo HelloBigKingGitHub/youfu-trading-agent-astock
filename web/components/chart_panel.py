@@ -1,4 +1,4 @@
-"""K线 + MA + 成交量 + 实时报价 + 实时 SSE 推送 面板 (v0.4.0).
+"""K线 + MA + 成交量 + 实时报价 面板 (v0.4.0).
 
 Entry point: :func:`render_chart_panel`. Sidebar nav (in ``web/app.py``) calls
 this when ``nav == "chart"``.
@@ -13,42 +13,37 @@ Data flow
    是 SSE 长连接端点, 普通 HTTP GET 不带 ``Accept: text/event-stream`` 会被
    服务端先保持连接再超时断开 → ``RemoteDisconnected``), rendered as
    ``bb-quote-banner`` HTML.
-3. Browser side (``_render_lightweight_chart_with_sse``): Lightweight Charts v4
-   embeds historical K-line + MA5/10/20 + volume, then opens an ``EventSource``
-   to ``push2his.eastmoney.com/api/qt/stock/trends2/sse`` for live updates
-   (CORS-verified, no backend proxy needed).
+3. K-line + MA + volume chart via ``streamlit-lightweight-charts`` (PyPI
+   package, MIT, TradingView's Lightweight Charts v5 wrapped as a proper
+   streamlit custom component). This bypasses the DOMPurify limitations of
+   ``st.html(unsafe_allow_javascript=True)`` because custom components are
+   served via streamlit's internal ``_stcore/bidi-components/`` endpoint and
+   do not pass through the sanitize pass.
 
-v0.4.0 fix
-----------
-streamlit 1.58's ``st.html(unsafe_allow_javascript=True)`` uses DOMPurify to
-sanitize the HTML, then ``useEffect`` replaces each ``<script>`` element with
-a clone. The clone preserves ``src`` (HTTP fetch → execute) and
-``textContent`` (inline script → execute) per the streamlit 1.58 client logic.
-**But** DOMPurify 3.4.5 keeps ``<script>`` element via ``ADD_TAGS=['script']``,
-yet the **inline text** inside the original script body is NOT preserved when
-the element is re-cloned (streamlit uses ``replaceChild`` to swap with a
-*new* ``<script>`` whose ``textContent`` is whatever DOMPurify's
-sanitize-text pass returned -- and inline JS strings are text nodes that get
-escaped or stripped when the HTML is parsed by DOMPurify).
+v0.4.0 migration note
+---------------------
+Earlier 0.4.0 versions tried to embed Lightweight Charts via ``st.html``
+inline scripts + ``<script src=...>`` for the LWC bundle, but streamlit
+1.58's DOMPurify 3.4.5 keeps the ``<script>`` element but strips the
+inline body (per the streamlit client ``Html.oJkhUkEr.js``'s
+``Ye`` React component: ``useEffect`` clones each script via
+``createElement + replaceChild`` but the inline body is a text node that
+gets escaped during DOMPurify's HTML-to-DOM round-trip). The 3-script
+split (data / src / IIFE) workaround also failed for the same reason.
 
-To work around this we split the chart boot into THREE sibling elements
-inside the same ``st.html`` payload:
+Switching to ``streamlit-lightweight-charts==0.7.20`` (a proper streamlit
+custom component shipped as a prebuilt React bundle) bypasses the sanitize
+pass entirely and renders K-line + MA + volume correctly.
 
-  1. ``<script>window.__LWC_DATA = {...};</script>`` - inline data block
-     (streamlit 1.58 *does* run inline scripts whose body is a single
-     assignment -- the trick is keeping it to a one-liner with no curly
-     braces, no template literals, no control flow).
-  2. ``<script src="/app/static/lightweight-charts.standalone.production.js">
-     </script>`` - the LWC bundle, loaded as an external script (a fresh
-     ``<script src>`` element always executes when inserted into the DOM,
-     regardless of any prior DOMPurify pass).
-  3. ``<script>tryInit + chart code</script>`` - the chart-boot inline
-     script. Same one-liner rule: no top-level ``{`` or ``}`` in the body.
-     Uses ``() => {{ ... }}`` IIFE so the inner code is one expression.
-
-If streamlit 1.58 still strips the inner text of inline scripts, this entire
-mechanism breaks and we have to fall back to ``st.plotly_chart`` for
-candlestick rendering. For now this three-script split works.
+SSE realtime
+------------
+Note: the earlier D2 direct EventSource realtime push to
+``push2his.eastmoney.com/api/qt/stock/trends2/sse`` is NOT yet wired into
+the new wrapper. ``renderLightweightCharts`` is a black-box component, so
+we cannot inject an EventSource into its iframe. Real-time updates would
+require either: (a) polling every 5-10s + re-render, or (b) upgrading
+``streamlit-lightweight-charts`` to expose an update hook. We ship the
+historical view first; realtime is a follow-up.
 """
 
 from __future__ import annotations
@@ -62,16 +57,17 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from streamlit_lightweight_charts import renderLightweightCharts
 
 
 logger = logging.getLogger(__name__)
 
 
-_LIGHTWEIGHT_CDN = (
-    # 优先用本地 web/static/ (不依赖外网 CDN, 解决 FlClash 阻断 unpkg 导致 SSL BAD_RECORD_MAC_ALERT 的问题)
-    # streamlit 默认 serve 在 /app/static/ 路径 (需要 server.enableStaticServing=true)
-    "/app/static/lightweight-charts.standalone.production.js"
-)
+# Tokens (red up / green down for A-share convention; can be flipped by
+# editing web/styles/tokens.css's --bb-up / --bb-down to match Chinese
+# market convention).
+_BB_UP = "#ff4d6d"        # red (涨)
+_BB_DOWN = "#00d68f"      # green (跌)
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "kline"
 _CACHE_TTL = 24 * 3600
@@ -114,19 +110,18 @@ def render_chart_panel() -> None:
         logger.warning("_get_realtime_quote failed for %s: %s", ticker, exc, exc_info=True)
         st.warning(f"实时报价拉取失败: {exc}")
 
-    # 3. K-line + MA + volume + SSE realtime
+    # 3. K-line + MA + volume chart
     try:
         df = _get_historical_kline(ticker, rng)
         if df.empty:
             st.warning(f"{ticker} 在 {rng} 范围内无 K 线数据")
             return
-        mas = _get_ma(df, [5, 10, 20])
-        _render_lightweight_chart_with_sse(df, mas, ticker, rng)
+        _render_lwc_chart(df, ticker, rng)
     except Exception as exc:
         st.error(f"K 线数据加载失败: {exc}")
 
 
-# ── Real-time quote (Python 端一次性, 给 banner 用) ──────────
+# ── Real-time quote ────────────────────────────────────────────
 
 
 def _get_realtime_quote(ticker: str) -> dict:
@@ -186,14 +181,12 @@ def _get_historical_kline(ticker: str, rng: str) -> pd.DataFrame:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache = _CACHE_DIR / f"{ticker}_{rng}.csv"
 
-    # Try cache
     if cache.exists() and (time.time() - cache.stat().st_mtime) < _CACHE_TTL:
         try:
             return pd.read_csv(cache, parse_dates=["Date"])
         except Exception:
             pass
 
-    # Compute fetch window
     end = date.today().isoformat()
     start = {
         "1d": (date.today() - timedelta(days=2)).isoformat(),
@@ -218,7 +211,7 @@ def _get_historical_kline(ticker: str, rng: str) -> pd.DataFrame:
         df.to_csv(cache, index=False, encoding="utf-8")
         return df
     except Exception as exc:
-        if cache.exists():  # stale cache fallback
+        if cache.exists():
             try:
                 return pd.read_csv(cache, parse_dates=["Date"])
             except Exception:
@@ -226,17 +219,30 @@ def _get_historical_kline(ticker: str, rng: str) -> pd.DataFrame:
         raise
 
 
-def _get_ma(df: pd.DataFrame, windows: list[int]) -> dict[str, pd.Series]:
-    return {f"MA{w}": df["Close"].rolling(window=w).mean() for w in windows}
+def _get_ma(df: pd.DataFrame, windows: list[int]) -> dict[str, list[dict]]:
+    """Return MA line series for the chart, skipping leading NaN values."""
+    out: dict[str, list[dict]] = {}
+    dates = df["Date"].dt.strftime("%Y-%m-%d").tolist()
+    for w in windows:
+        ma = df["Close"].rolling(window=w).mean()
+        points = []
+        for d, v in zip(dates, ma):
+            if pd.notna(v):
+                points.append({"time": d, "value": round(float(v), 3)})
+        out[f"MA{w}"] = points
+    return out
 
 
-# ── Lightweight Charts + SSE realtime (D2 直连) ────────────────
+# ── Lightweight Charts via streamlit-lightweight-charts ──────────
 
 
-def _render_lightweight_chart_with_sse(
-    df: pd.DataFrame, mas: dict, ticker: str, rng: str,
-) -> None:
-    """Embed Lightweight Charts + EventSource realtime update via st.html()."""
+def _render_lwc_chart(df: pd.DataFrame, ticker: str, rng: str) -> None:
+    """Render the candlestick + volume + MA chart via the PyPI wrapper.
+
+    Wraps the official ``streamlit-lightweight-charts`` package
+    (which itself wraps TradingView's ``lightweight-charts`` v5 as a
+    prebuilt React bundle distributed as a streamlit custom component).
+    """
     candles = [
         {
             "time": d.strftime("%Y-%m-%d"),
@@ -247,107 +253,104 @@ def _render_lightweight_chart_with_sse(
         }
         for d, o, h, l, c in zip(df["Date"], df["Open"], df["High"], df["Low"], df["Close"])
     ]
-    volumes = [
-        {
-            "time": d.strftime("%Y-%m-%d"),
-            "value": int(v),
-            "is_up": float(c) >= float(o),
-        }
-        for d, o, c, v in zip(df["Date"], df["Open"], df["Close"], df["Volume"])
+    # Volume histogram: per-bar color (red up / green down) handled by
+    # LWC's "color" property which can be a list (one color per bar).
+    vol_colors = [
+        _BB_UP if float(c) >= float(o) else _BB_DOWN
+        for o, c in zip(df["Open"], df["Close"])
     ]
-    ma_series = {
-        name: [
-            {"time": d.strftime("%Y-%m-%d"), "value": (None if pd.isna(v) else float(v))}
-            for d, v in zip(df["Date"], ser)
-        ]
-        for name, ser in mas.items()
+    volumes = [
+        {"time": d.strftime("%Y-%m-%d"), "value": int(v), "color": col}
+        for d, v, col in zip(df["Date"], df["Volume"], vol_colors)
+    ]
+    ma_series = _get_ma(df, [5, 10, 20])
+
+    candle_series = [
+        {
+            "type": "Candlestick",
+            "data": candles,
+            "options": {
+                "upColor": _BB_UP,
+                "downColor": _BB_DOWN,
+                "borderUpColor": _BB_UP,
+                "borderDownColor": _BB_DOWN,
+                "wickUpColor": _BB_UP,
+                "wickDownColor": _BB_DOWN,
+            },
+        }
+    ]
+
+    volume_series = [
+        {
+            "type": "Histogram",
+            "data": volumes,
+            "options": {
+                "priceFormat": {"type": "volume"},
+                "priceScaleId": "vol",
+                "color": _BB_UP,
+            },
+            "priceScale": {
+                "scaleMargins": {"top": 0.8, "bottom": 0},
+                "alignLabels": False,
+            },
+        }
+    ]
+
+    ma_colors = {"MA5": "#4d9aff", "MA10": "#fbbf24", "MA20": "#7ab4ff"}
+    line_series = [
+        {
+            "type": "Line",
+            "data": points,
+            "options": {
+                "color": ma_colors.get(name, "#8a96a8"),
+                "lineWidth": 1,
+                "priceLineVisible": False,
+                "lastValueVisible": False,
+                "title": name,
+            },
+        }
+        for name, points in ma_series.items()
+    ]
+
+    chart_options = {
+        "height": 480,
+        "layout": {
+            "background": {"type": "solid", "color": "#0e131b"},
+            "textColor": "#8a96a8",
+        },
+        "grid": {
+            "vertLines": {"color": "#1c2532"},
+            "horzLines": {"color": "#1c2532"},
+        },
+        "timeScale": {
+            "timeVisible": True,
+            "secondsVisible": False,
+            "borderColor": "#1c2532",
+        },
+        "rightPriceScale": {"borderColor": "#1c2532"},
+        "crosshair": {"mode": 0},
+        "watermark": {
+            "visible": True,
+            "text": f"{ticker}  {rng}",
+            "fontSize": 32,
+            "horzAlign": "left",
+            "vertAlign": "top",
+            "color": "rgba(74, 154, 255, 0.08)",
+        },
     }
 
-    data_json = json.dumps(
-        {"candles": candles, "volumes": volumes, "ma": ma_series},
-        ensure_ascii=False,
+    renderLightweightCharts(
+        [
+            {"chart": chart_options, "series": candle_series + line_series},
+            {
+                "chart": {**chart_options, "height": 120, "watermark": {"visible": False}},
+                "series": volume_series,
+            },
+        ],
+        key=f"lwc_{ticker}_{rng}",
     )
 
-    secid_prefix = "1." if ticker.startswith("6") else "0."
-    secid = f"{secid_prefix}{ticker}"
-    sse_url = (
-        "https://push2his.eastmoney.com/api/qt/stock/trends2/sse"
-        f"?secid={secid}"
-        "&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"
-        "&fields2=f51,f52,f53,f54,f55,f56,f57,f58"
-        "&iscr=0&ndays=1"
+    st.caption(
+        "蜡烛颜色遵循 A 股惯例（红涨绿跌），MA5/10/20 + 成交量副图。"
+        "历史 K 线数据来自 mootdx → sina → push2his 3 层 fallback。"
     )
-
-    # === 3-脚本分流方案 ===
-    # 1) data 注入 (inline 但只 1 行)
-    # 2) LWC bundle load (script src, streamlit 1.58 100% 执行)
-    # 3) chart boot (inline IIFE)
-    html = f"""
-    <div id="chart" style="width:100%;height:600px"></div>
-    <script>window.__LWC_DATA = {data_json};</script>
-    <script src="{_LIGHTWEIGHT_CDN}"></script>
-    <script>
-    (function() {{
-        const data = window.__LWC_DATA;
-        const upHex = getComputedStyle(document.documentElement).getPropertyValue('--bb-up').trim();
-        const downHex = getComputedStyle(document.documentElement).getPropertyValue('--bb-down').trim();
-        const upAlpha = upHex + '80';
-        const downAlpha = downHex + '80';
-        const maColors = {{ MA5: '#4d9aff', MA10: '#fbbf24', MA20: '#7ab4ff' }};
-        function boot() {{
-            if (typeof LightweightCharts === 'undefined') {{ setTimeout(boot, 50); return; }}
-            const c = document.getElementById('chart');
-            const chart = LightweightCharts.createChart(c, {{
-                width: c.clientWidth,
-                height: 600,
-                layout: {{ background: {{ type: 'solid', color: '#0e131b' }}, textColor: '#8a96a8' }},
-                grid: {{ vertLines: {{ color: '#1c2532' }}, horzLines: {{ color: '#1c2532' }} }},
-                timeScale: {{ timeVisible: true, secondsVisible: false, borderColor: '#1c2532' }},
-                rightPriceScale: {{ borderColor: '#1c2532' }},
-            }});
-            const cs = chart.addCandlestickSeries({{
-                upColor: upHex, downColor: downHex,
-                borderUpColor: upHex, borderDownColor: downHex,
-                wickUpColor: upHex, wickDownColor: downHex,
-            }});
-            cs.setData(data.candles);
-            const vs = chart.addHistogramSeries({{
-                priceFormat: {{ type: 'volume' }}, priceScaleId: '',
-                scaleMargins: {{ top: 0.8, bottom: 0 }},
-            }});
-            vs.setData(data.volumes.map(v => ({{ ...v, color: v.is_up ? upAlpha : downAlpha }})));
-            chart.priceScale('').applyOptions({{ scaleMargins: {{ top: 0.8, bottom: 0 }} }});
-            Object.entries(data.ma).forEach(([name, points]) => {{
-                const s = chart.addLineSeries({{
-                    color: maColors[name] || '#8a96a8', lineWidth: 1,
-                    priceLineVisible: false, lastValueVisible: false,
-                }});
-                s.setData(points.filter(p => p.value !== null));
-            }});
-            chart.timeScale().fitContent();
-
-            // === D2: 浏览器直连东财 SSE 实时推送 ===
-            const es = new EventSource("{sse_url}");
-            es.onmessage = (e) => {{
-                try {{
-                    const payload = JSON.parse(e.data);
-                    const d = payload.data;
-                    if (!d || !d.trends || d.trends.length === 0) return;
-                    const last = d.trends[d.trends.length - 1].split(',');
-                    const time = last[0].substring(0, 10);
-                    const open = parseFloat(last[1]);
-                    const close = parseFloat(last[2]);
-                    const high = parseFloat(last[3]);
-                    const low = parseFloat(last[4]);
-                    const volume = parseInt(last[5]);
-                    cs.update({{ time, open, high, low, close }});
-                    vs.update({{ time, value: volume, color: close >= open ? upAlpha : downAlpha }});
-                }} catch (err) {{ console.error('SSE parse error', err); }}
-            }};
-            es.onerror = (e) => {{ console.warn('SSE connection error, will auto-reconnect', e); }};
-        }}
-        boot();
-    }})();
-    </script>
-    """
-    st.html(html, unsafe_allow_javascript=True)
