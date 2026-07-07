@@ -349,10 +349,5 @@ def _render_lightweight_chart_with_sse(
     }};
     </script>
     """
-    import streamlit.components.v2 as components_v2
-    try:
-        components_v2.html(html, width=None, height=620)
-    except (ImportError, AttributeError):
-        # Fallback to v1 iframe-based html component (more permissive for inline JS)
-        import streamlit.components.v1 as components_v1
-        components_v1.html(html, width=None, height=620, scrolling=False)
+    import streamlit as st
+    st.html(html, unsafe_allow_javascript=True)
