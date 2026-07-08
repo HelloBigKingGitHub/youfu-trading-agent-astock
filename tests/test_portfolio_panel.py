@@ -582,6 +582,190 @@ class TestGetRebalanceSignals:
         assert get_rebalance_signals([], lookback_days=7) == []
 
 
+# ── Spec 3.5: rebalance banner behavior ──────────────────────────────
+
+
+class TestShowRebalanceBanner:
+    """``_show_rebalance_banner`` reads signals and emits ``st.info`` per signal."""
+
+    @pytest.mark.unit
+    def test_no_positions_skips_silently(self):
+        from web.components.portfolio_panel import _show_rebalance_banner
+        with patch("streamlit.info") as mock_info:
+            _show_rebalance_banner([])
+            assert not mock_info.called
+
+    @pytest.mark.unit
+    def test_empty_signals_skips_silently(self, store):
+        from web.components.portfolio_panel import _show_rebalance_banner
+        _add_basic_position(store)
+        with patch("streamlit.info") as mock_info:
+            _show_rebalance_banner(store.list_positions())
+            # MVP stub returns [] → no banner.
+            assert not mock_info.called
+
+    @pytest.mark.unit
+    def test_signals_emit_st_info(self, store):
+        from web.components.portfolio_panel import _show_rebalance_banner
+        _add_basic_position(store)
+        fake_signals = [
+            {
+                "ticker": "600595",
+                "old_signal": "bullish",
+                "new_signal": "bearish",
+                "detected_at": "2026-06-01",
+            }
+        ]
+        with patch(
+            "web.components.portfolio_panel.get_rebalance_signals",
+            return_value=fake_signals,
+        ), patch("streamlit.info") as mock_info:
+            _show_rebalance_banner(store.list_positions())
+            assert mock_info.called
+            msg = mock_info.call_args[0][0]
+            assert "600595" in msg
+            assert "bullish" in msg
+            assert "bearish" in msg
+
+    @pytest.mark.unit
+    def test_signals_capped_at_five(self, store):
+        """Banner surfaces at most 5 signals to keep the UI tidy."""
+        from web.components.portfolio_panel import _show_rebalance_banner
+        _add_basic_position(store)
+        fake_signals = [
+            {
+                "ticker": "60000" + str(i),
+                "old_signal": "bullish",
+                "new_signal": "bearish",
+                "detected_at": "2026-06-01",
+            }
+            for i in range(8)
+        ]
+        with patch(
+            "web.components.portfolio_panel.get_rebalance_signals",
+            return_value=fake_signals,
+        ), patch("streamlit.info") as mock_info:
+            _show_rebalance_banner(store.list_positions())
+            # 8 signals supplied, banner renders 5.
+            assert mock_info.call_count == 5
+
+
+# ── Spec 3.5: fetch_current_prices fallback behavior ─────────────────
+
+
+class TestFetchCurrentPrices:
+    """``_fetch_current_prices`` calls ``safe_quote`` per ticker and drops None."""
+
+    @pytest.mark.unit
+    def test_empty_tickers_returns_empty_dict(self):
+        from web.components.portfolio_panel import _fetch_current_prices
+        assert _fetch_current_prices([]) == {}
+
+    @pytest.mark.unit
+    def test_skips_none_quotes(self):
+        """If safe_quote returns None for a ticker, that ticker is excluded."""
+        from web.components.portfolio_panel import _fetch_current_prices
+
+        def fake_safe_quote(t):
+            return 12.5 if t == "600595" else None
+
+        with patch(
+            "web.components.portfolio_panel.safe_quote", side_effect=fake_safe_quote,
+        ):
+            out = _fetch_current_prices(["600595", "000001"])
+        assert out == {"600595": 12.5}
+        assert "000001" not in out
+
+    @pytest.mark.unit
+    def test_all_quotes_succeed(self):
+        from web.components.portfolio_panel import _fetch_current_prices
+
+        with patch(
+            "web.components.portfolio_panel.safe_quote",
+            return_value=11.0,
+        ):
+            out = _fetch_current_prices(["600595", "000001"])
+        assert out == {"600595": 11.0, "000001": 11.0}
+
+    @pytest.mark.unit
+    def test_safe_quote_exception_propagates(self):
+        """``_fetch_current_prices`` does not swallow safe_quote exceptions;
+        the caller (panel entry) wraps in try/except. We just confirm the
+        current contract: an exception bubbles up untouched."""
+        from web.components.portfolio_panel import _fetch_current_prices
+
+        def boom(t):
+            raise RuntimeError("network")
+
+        with patch("web.components.portfolio_panel.safe_quote", side_effect=boom):
+            with pytest.raises(RuntimeError, match="network"):
+                _fetch_current_prices(["600595"])
+
+
+# ── Spec 3.5: load_data and render_header fallbacks ─────────────────
+
+
+class TestLoadDataIntegration:
+
+    @pytest.mark.unit
+    def test_loads_three_lists_from_store(self, store):
+        from web.components.portfolio_panel import _load_data
+        _add_basic_position(store)
+        pos, txs, alerts = _load_data()
+        assert len(pos) == 1
+        assert txs == []
+        assert alerts == []
+
+    @pytest.mark.unit
+    def test_loads_with_transactions_and_alerts(self, store):
+        from web.components.portfolio_panel import _load_data
+        pos = _add_basic_position(store)
+        store.add_transaction(pos.position_id, "2026-02-01", "buy", 11.0, 50)
+        store.add_alert("600595", "price_above", 12.0)
+        positions, transactions, alerts = _load_data()
+        assert len(positions) == 1
+        assert len(transactions) == 1
+        assert len(alerts) == 1
+
+    @pytest.mark.unit
+    def test_empty_store_returns_empty_lists(self, store):
+        from web.components.portfolio_panel import _load_data
+        assert _load_data() == ([], [], [])
+
+
+class TestRenderHeaderFallbacks:
+
+    @pytest.mark.unit
+    def test_render_header_emits_title_and_caption(self):
+        from web.components.portfolio_panel import _render_header
+        with patch("streamlit.markdown") as mock_md, \
+             patch("streamlit.caption") as mock_caption, \
+             patch("streamlit.button", return_value=False):
+            _render_header()
+            assert mock_md.called
+            assert mock_caption.called
+            # Title should reference "我的仓位"
+            title = mock_md.call_args[0][0]
+            assert "我的仓位" in title
+
+    @pytest.mark.unit
+    def test_render_header_reload_button_clears_cache_and_reruns(self):
+        import streamlit as st
+
+        from web.components.portfolio_panel import _render_header
+        with patch.dict(
+            "streamlit.session_state",
+            {"portfolio_prices_cache": {"600595": 12.0}},
+            clear=False,
+        ), patch("streamlit.markdown"), \
+             patch("streamlit.caption"), \
+             patch("streamlit.button", return_value=True), \
+             patch("streamlit.rerun") as mock_rerun:
+            _render_header()
+            assert mock_rerun.called
+            assert "portfolio_prices_cache" not in st.session_state
+
+
 # ── panel entry: render smoke test ────────────────────────────────────
 
 

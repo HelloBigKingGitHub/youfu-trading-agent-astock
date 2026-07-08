@@ -6,7 +6,7 @@
 - **仓库**: https://github.com/HelloBigKingGitHub/youfu-trading-agent-astock
 - **协议**: Apache 2.0
 - **Python**: >=3.10
-- **当前版本**: 0.4.0
+- **当前版本**: 0.5.0
 
 ## 架构
 
@@ -24,8 +24,8 @@
 | 百度股市通 | HTTP (gushitong.baidu) | 概念板块归属（资金流已迁移至东财push2） |
 | 东方财富 np-ipick | HTTP | 选股热度排名（板块轮动日报用） |
 
-### Agent 角色（7 个 + 板块轮动日报）
-原版 4 个（市场/情绪/新闻/基本面）+ A 股特化 3 个（政策分析师/游资追踪/解禁监控）+ **v0.2.12 新增「板块轮动日报」**（侧边栏按钮直接调用 `get_sector_rotation_digest`，不走 LangGraph 也不消耗 LLM token）：东财 np-ipick 选股热度 + 同花顺涨停归因 + 百度 PAE 概念反查 → 4 段式 Markdown。
+### Agent 角色（7 个 + 板块轮动日报 + 个人仓位模块）
+原版 4 个（市场/情绪/新闻/基本面）+ A 股特化 3 个（政策分析师/游资追踪/解禁监控）+ **v0.2.12 新增「板块轮动日报」**（侧边栏按钮直接调用 `get_sector_rotation_digest`，不走 LangGraph 也不消耗 LLM token）：东财 np-ipick 选股热度 + 同花顺涨停归因 + 百度 PAE 概念反查 → 4 段式 Markdown。**v0.5.0 新增「个人仓位跟踪」**（侧边栏第 8 按钮）：手工录入持仓 + 交易流水，与 Bull/Bear 信号联动，按行业/板块/资产类别归因，配套 XIRR / Sharpe / 最大回撤 / Brinson 业绩归因。
 
 ### 关键路径
 - `tradingagents/dataflows/a_stock.py` — A 股数据 vendor，所有数据获取入口
@@ -33,6 +33,9 @@
 - `tradingagents/agents/` — 7 个 Analyst + Bull/Bear 辩论逻辑
 - `web/app.py` — Streamlit Web UI 入口
 - `web/components/sector_panel.py` — v0.2.13 板块轮动 UI（独立组件，依赖 `SectorRotationDigest`）
+- `backend/core/portfolio_store.py` — v0.5.0 个人仓位持久化（positions/transactions/alerts JSON + audit.log，单例 + RLock）
+- `backend/core/portfolio_calc.py` — v0.5.0 仓位指标计算（XIRR / Sharpe / MaxDD / Brinson / 板块归因）
+- `web/components/portfolio_panel.py` — v0.5.0 仓位面板入口（6 tabs + Bull/Bear 联动 banner）
 - `cli/` — CLI 入口
 
 ### 中文股票名解析链路
@@ -116,6 +119,58 @@ A 股股价 K 线图，实时更新 + 历史查询。
 - 13 新测试（push2his 6 + chart_panel 7）全部通过
 - 312 已有测试无回归
 - D2 SSE 集成：CORS 验证（`Access-Control-Allow-Origin: http://localhost:8501`）
+
+## 个人仓位模块 (v0.5.0)
+
+A 股个人仓位跟踪 + 业绩归因，与 Bull/Bear 信号联动。手工录入持仓 / 流水 → 实时计算盈亏 / 集中度 / 板块归因 / XIRR / Sharpe / 最大回撤 / Brinson 业绩归因。预警支持 7 种规则（price_above/below/pct_change/pnl_pct/take_profit/stop_loss/trailing_stop），导入支持 4 种 CSV 格式（东财 / 同花顺 / 雪球 / generic）。
+
+### 数据流
+```
+用户录入 / CSV 导入
+    ↓
+backend/core/portfolio_store (单例 + RLock，原子写 JSON)
+    ↓
+backend/core/portfolio_calc (XIRR/Sharpe/MaxDD/Brinson/板块归因)
+    ↓
+web/components/portfolio_panel (6 tabs: 总览/流水/配置/预警/导入导出/收益风险)
+```
+
+### 后端模块
+- `backend/core/portfolio_store.py` — 单例 + RLock 持久化（positions.json / transactions.json / alerts.json / audit.log）
+- `backend/core/portfolio_calc.py` — `compute_position_metrics` / `compute_portfolio_summary` / `group_by_sector` / `compute_xirr` / `compute_sharpe` / `compute_max_drawdown` / `compute_brinson_attribution`
+- `backend/core/portfolio_alerts.py` — 7 种规则评估器 + 300s anti-repeat 去重
+- `backend/core/portfolio_import.py` — 4 种 CSV 格式检测/解析/预览/导入/导出（UTF-8 BOM Excel 友好）
+
+### UI 入口
+侧边栏 8 按钮（第 7 个）：`💼 我的仓位` → 切到 `render_portfolio_panel()`。布局 6 tabs：📊 总览 / 📜 流水 / 🎯 配置 / 🔔 预警 / 📥 导入/导出 / 📈 收益风险。Bull/Bear 信号变化触发顶部 banner（Phase 4 启用 MVP stub，目前显示空）。
+
+### 关键文件
+| 文件 | 行数 | 作用 |
+|---|---|---|
+| `backend/core/portfolio_store.py` | 287 | 单例 + RLock + JSON 原子写 + audit |
+| `backend/core/portfolio_calc.py` | 305+ | 业绩归因全套计算 |
+| `backend/core/portfolio_alerts.py` | 145 | 7 种规则 + 300s 去重 |
+| `backend/core/portfolio_import.py` | 430 | 4 种 CSV 格式 + UTF-8 BOM |
+| `web/components/portfolio_panel.py` | 172 | 主入口 6 tabs dispatcher |
+| `web/components/portfolio_dialogs.py` | ~300 | 4 个对话框 (新增/编辑/交易/预警) |
+| `web/components/portfolio_overview.py` | ~200 | 总览 tab |
+| `web/components/portfolio_transactions.py` | ~150 | 流水 tab |
+| `web/components/portfolio_allocation.py` | ~180 | 配置 tab |
+| `web/components/portfolio_alerts_view.py` | ~150 | 预警 tab |
+| `web/components/portfolio_import_view.py` | ~200 | 导入导出 tab |
+| `web/components/portfolio_risk.py` | ~180 | 收益风险 tab |
+| `tests/test_portfolio_store.py` | 90+ | 单例 + 校验 + 过滤 |
+| `tests/test_portfolio_calc.py` | 90+ | 业绩归因全套 |
+| `tests/test_portfolio_alerts.py` | 35+ | 7 种规则 + 去重 |
+| `tests/test_portfolio_import.py` | 50+ | 4 种 CSV 格式 |
+| `tests/test_portfolio_panel.py` | 90+ | Streamlit UI |
+| **总计** | **~3000** | - |
+
+### 测试
+- 304 portfolio 测试全部通过
+- 96% 覆盖率（portfolio_store 98%、portfolio_calc 95%、portfolio_alerts 97%、portfolio_import 96%）
+- 610 全量测试通过（pre-existing chart_panel 环境失败未计入）
+- 所有测试用 `monkeypatch.setattr("backend.core.portfolio_store.PORTFOLIO_DIR", tmp_path)` 隔离真实 `~/.tradingagents/portfolio/`
 
 ## 已知问题与注意事项
 

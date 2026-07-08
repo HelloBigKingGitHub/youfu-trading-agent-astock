@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [v0.5.0] - 2026-07-XX
+
+### 新增
+- **个人仓位跟踪模块（Personal Portfolio Module）** — A 股个人仓位管理 + 业绩归因全套，与 Bull/Bear 信号联动
+  - **`backend/core/portfolio_store.py`**（287 行）— 单例 + RLock 持久化
+    - `positions.json` / `transactions.json` / `alerts.json` / `audit.log` 四件套
+    - 原子写（`.tmp` 替换）+ JSON 容错读取（损坏文件返回 `[]`）
+    - 完整 CRUD：`add/update/delete/get/list` for positions/transactions/alerts
+    - 双锁模式：`PortfolioStore._lock`（类级 Lock，单例）+ `self._rlock`（实例 RLock，并发安全）
+  - **`backend/core/portfolio_calc.py`**（305+ 行）— 业绩归因全套计算
+    - `compute_position_metrics(position, current_price)` — 单仓位盈亏 / 持仓天数 / 今日盈亏
+    - `compute_portfolio_summary(positions, prices)` — 总成本 / 总市值 / 总盈亏 / 总收益率
+    - `group_by_sector(positions, prices)` — 按概念板块归因（百度 PAE 数据源）
+    - `compute_xirr(transactions, current_value)` — XIRR 年化收益率（scipy brentq）
+    - `compute_sharpe(equity_curve, risk_free_rate=0.025)` — Sharpe Ratio
+    - `compute_max_drawdown(equity_curve)` — 最大回撤（peak-to-trough）
+    - `compute_brinson_attribution(positions, benchmark_weights)` — Brinson-Fachler 业绩归因
+      （selection + allocation + interaction）
+  - **`backend/core/portfolio_alerts.py`**（145 行）— 7 种预警规则
+    - `price_above` / `price_below` / `pct_change` / `pnl_pct` / `take_profit` / `stop_loss` / `trailing_stop`
+    - 300 秒 anti-repeat 去重窗口（`ANTI_REPEAT_WINDOW_SEC`）
+    - 触发后写 audit log + 推送消息（含中文字段：突破/跌破/涨跌幅/止盈/止损）
+  - **`backend/core/portfolio_import.py`**（430 行）— CSV 导入导出
+    - 4 种 CSV 格式自动检测：**东方财富 / 同花顺 / 雪球 / generic**
+    - 冲突解决：`overwrite` / `skip` / `merge`（加权平均成本）
+    - UTF-8 BOM 导出（Excel 友好，自动识别中文编码）
+    - `preview_import` 区分 `new` / `conflicts` / `invalid` 三类
+- **Web UI 6 tabs + 4 dialogs + 顶部 banner**
+  - `web/components/portfolio_panel.py`（172 行）— 主入口 dispatcher
+  - 6 tabs: 📊 总览 / 📜 流水 / 🎯 配置 / 🔔 预警 / 📥 导入/导出 / 📈 收益风险
+  - 4 dialogs: 新增持仓 / 编辑持仓 / 新增交易 / 新增预警（`portfolio_dialogs.py`）
+  - 顶部 Bull/Bear 信号变化 banner（Phase 4 P1 hook；MVP stub 返回 `[]`）
+  - 侧边栏新增 `💼 我的仓位` nav 按钮（8 按钮，第 7 个）
+  - `_fetch_current_prices` 容错：safe_quote 失败/None 跳过该 ticker
+  - `_show_rebalance_banner` 信号上限 5 条防止 UI 过载
+  - `_render_header` 刷新按钮清缓存 + rerun
+- **数据隔离** — 所有 portfolio 数据存 `~/.tradingagents/portfolio/`，与日志/缓存分离
+- **Bull/Bear 联动** — `get_rebalance_signals` Phase 4 P1 hook 已埋好（当前 MVP 返回 `[]`）
+
+### 测试
+- 304 个 portfolio 模块测试全部通过（store 90+ / calc 90+ / alerts 35+ / import 50+ / panel 90+）
+- 96% 覆盖率（portfolio_store 98% / portfolio_calc 95% / portfolio_alerts 97% / portfolio_import 96%）
+- 610 全量测试通过（pre-existing chart_panel 环境失败未计入）
+- 所有测试 `monkeypatch.setattr("backend.core.portfolio_store.PORTFOLIO_DIR", tmp_path)` 隔离真实 `~/.tradingagents/portfolio/`
+
+### 已知局限
+- **复权处理 P2**：当前成本价/盈亏计算使用静态成本基线（cost_basis），不支持除权除息事件后的复权调整。后续可基于交易流水 + 分红/拆股事件自动重构调整后成本基线。
+
 ## [v0.4.0] - 2026-07-XX
 
 ### 新增

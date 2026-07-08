@@ -339,3 +339,176 @@ class TestFormatRegistry:
 
     def test_four_formats_defined(self):
         assert set(CSV_FORMATS.keys()) == {"eastmoney", "ths", "xueqiu", "generic"}
+
+
+# ── Spec 3.4: detect_format edge cases ─────────────────────────────
+
+
+class TestDetectFormatEdgeCases:
+
+    def test_returns_none_when_fewer_than_three_matches(self, tmp_path):
+        """Score threshold is 0.6; only one alias match scores 1/5 → None."""
+        # "代码" matches code alias in three formats but no other field.
+        csv = "代码,foo,bar,baz\n600595,X,10,100,2026-01-01\n"
+        path = _write(tmp_path / "sparse.csv", csv)
+        assert detect_format(path) is None
+
+    def test_score_at_threshold_accepted(self, tmp_path):
+        """3/5 canonical fields matched (>= 0.6) should resolve to a format."""
+        # 证券代码 + 证券名称 + 建仓日期 → matches eastmoney: code, name, date (3/5).
+        csv = "证券代码,证券名称,foo,bar,建仓日期\n600595,X,Y,Z,2026-01-01\n"
+        path = _write(tmp_path / "partial.csv", csv)
+        assert detect_format(path) == "eastmoney"
+
+    def test_header_with_only_blank_lines_returns_none(self, tmp_path):
+        csv = "\n\n\n"
+        path = _write(tmp_path / "blank.csv", csv)
+        assert detect_format(path) is None
+
+
+# ── Spec 3.4: parse_csv edge cases ──────────────────────────────────
+
+
+class TestParseCSVEdgeCases:
+
+    def test_missing_code_column_returns_empty(self, tmp_path):
+        """If header has no alias matching the format's code field, parse_csv
+        silently returns [] (cannot map required field)."""
+        csv = "foo,bar,baz\n1,2,3\n"
+        path = _write(tmp_path / "no_code.csv", csv)
+        rows = parse_csv(path, "eastmoney")
+        assert rows == []
+
+    def test_drops_rows_with_negative_cost(self, tmp_path):
+        csv = "代码,名称,cost,qty,date\n300750,X,-1.0,100,2026-01-01\n"
+        path = _write(tmp_path / "neg.csv", csv)
+        rows = parse_csv(path, "generic")
+        assert rows == []
+
+    def test_drops_rows_with_unparseable_date(self, tmp_path):
+        csv = "代码,名称,cost,qty,date\n300750,X,1.0,100,not-a-date\n"
+        path = _write(tmp_path / "bad_date.csv", csv)
+        rows = parse_csv(path, "generic")
+        assert rows == []
+
+    def test_empty_data_rows_returns_empty_list(self, tmp_path):
+        csv = "代码,名称,cost,qty,date\n"
+        path = _write(tmp_path / "no_rows.csv", csv)
+        rows = parse_csv(path, "generic")
+        assert rows == []
+
+
+# ── Spec 3.4: preview_import bucketing ──────────────────────────────
+
+
+class TestPreviewImportBucketing:
+
+    def test_empty_parsed_returns_all_empty_buckets(self, store):
+        out = preview_import([], store.list_positions())
+        assert out == {"new": [], "conflicts": [], "invalid": []}
+
+    def test_zero_cost_goes_to_invalid_bucket(self, store):
+        parsed = [ImportRow("600595", "X", 0.0, 100, "2026-01-01")]
+        out = preview_import(parsed, [])
+        assert out["new"] == []
+        assert out["conflicts"] == []
+        assert len(out["invalid"]) == 1
+        assert out["invalid"][0]["row"].ticker == "600595"
+
+    def test_zero_quantity_goes_to_invalid_bucket(self, store):
+        parsed = [ImportRow("600595", "X", 10.0, 0, "2026-01-01")]
+        out = preview_import(parsed, [])
+        assert out["new"] == []
+        assert out["conflicts"] == []
+        assert len(out["invalid"]) == 1
+
+    def test_missing_ticker_goes_to_invalid_bucket(self, store):
+        parsed = [ImportRow("", "X", 10.0, 100, "2026-01-01")]
+        out = preview_import(parsed, [])
+        assert len(out["invalid"]) == 1
+
+
+# ── Spec 3.4: apply_import date merge logic ─────────────────────────
+
+
+class TestApplyImportDates:
+
+    def test_overwrite_advances_last_trade_date_to_max(self, store):
+        """Overwrite strategy picks max(existing.last_trade_date, parsed.date)."""
+        # Existing position: last_trade_date = 2026-03-01 (set by store on creation).
+        store.add_position("600595", "X", 10.0, 100, "2026-01-01")
+        # Manually push last_trade_date forward via update.
+        pos = store.list_positions()[0]
+        store.update_position(pos.position_id, last_trade_date="2026-03-01")
+        # Import with an even later date → overwrite should take max.
+        parsed = [ImportRow("600595", "Y", 12.0, 200, "2026-06-01")]
+        preview = preview_import(parsed, store.list_positions())
+        apply_import(preview, resolution_strategy="overwrite", store=store)
+        pos_after = store.get_position(pos.position_id)
+        assert pos_after.last_trade_date == "2026-06-01"
+        assert pos_after.cost_basis == 12.0
+        assert pos_after.quantity == 200
+
+    def test_overwrite_keeps_earlier_last_trade_date(self, store):
+        """When parsed.date < existing.last_trade_date, overwrite keeps the later."""
+        store.add_position("600595", "X", 10.0, 100, "2026-06-01")
+        pos = store.list_positions()[0]
+        # existing.last_trade_date is 2026-06-01 (from creation)
+        parsed = [ImportRow("600595", "Y", 12.0, 200, "2026-01-01")]
+        preview = preview_import(parsed, store.list_positions())
+        apply_import(preview, resolution_strategy="overwrite", store=store)
+        pos_after = store.get_position(pos.position_id)
+        assert pos_after.last_trade_date == "2026-06-01"
+
+    def test_apply_with_empty_preview_still_audits(self, store):
+        """Even when nothing is applied, apply_import writes an audit line."""
+        apply_import(
+            {"new": [], "conflicts": [], "invalid": []},
+            resolution_strategy="skip",
+            store=store,
+            file_path="/tmp/empty.csv",
+        )
+        log = store._path("audit.log").read_text(encoding="utf-8")
+        assert "apply_import" in log
+        assert "/tmp/empty.csv" in log
+        assert "applied=0" in log
+
+
+# ── Spec 3.4: export_csv computed columns ───────────────────────────
+
+
+class TestExportCSVEdgeCases:
+
+    def test_zero_cost_basis_yields_zero_pnl_pct(self, store, export_dir):
+        """cost_basis == 0 → pnl_pct is 0.0% (avoid ZeroDivisionError)."""
+        # add_position allows quantity >= 0; cost_basis can be 0.
+        pos = store.add_position("600595", "X", 0.0, 100, "2026-01-15")
+        out = export_csv([pos], output_dir=export_dir, current_prices={"600595": 5.0})
+        text = out.read_text(encoding="utf-8-sig")
+        # 0% pnl formatted as +0.00%
+        assert "+0.00%" in text
+
+    def test_missing_price_falls_back_to_cost_basis(self, store, export_dir):
+        """When ticker absent from current_prices, price defaults to cost_basis."""
+        pos = store.add_position("600595", "X", 10.0, 100, "2026-01-15")
+        # No current_prices dict at all.
+        out = export_csv([pos], output_dir=export_dir)
+        text = out.read_text(encoding="utf-8-sig")
+        # cost_basis → price, so pnl = 0 and pnl% = +0.00%
+        assert "+0.00%" in text
+
+    def test_output_filename_has_timestamp(self, store, export_dir):
+        """Export file name contains YYYYMMDD_HHMMSS timestamp."""
+        import re
+
+        pos = store.add_position("600595", "X", 10.0, 100, "2026-01-15")
+        out = export_csv([pos], output_dir=export_dir)
+        assert re.search(r"positions_\d{8}_\d{6}\.csv$", out.name)
+
+    def test_export_with_no_transactions_omits_tx_count_column(
+        self, store, export_dir
+    ):
+        pos = store.add_position("600595", "X", 10.0, 100, "2026-01-15")
+        out = export_csv([pos], output_dir=export_dir)
+        text = out.read_text(encoding="utf-8-sig")
+        assert "交易笔数" not in text

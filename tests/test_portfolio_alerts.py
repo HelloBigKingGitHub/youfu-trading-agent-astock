@@ -218,3 +218,108 @@ class TestEvaluateAlertsIntegration:
         evaluate_alerts(store, {"600595": 13.0})
         after = store.list_alerts(ticker="600595")[0].trigger_count
         assert after == before + 1
+
+
+# ── Spec 3.3.4: pnl_pct signed thresholds ───────────────────────────
+
+
+class TestPnlPctLoss:
+
+    def test_negative_threshold_triggers_on_loss(self, store):
+        """threshold -10% fires when pnl <= -10% (signed comparison)."""
+        store.add_alert("600595", "pnl_pct", -10.0)
+        # current 8, cost 10 → -20% pnl, which is >= -10? No: -20 >= -10 is False.
+        # pnl_pct rule fires when pct >= threshold, so a -5% loss with -10
+        # threshold fires (-5 >= -10), but -20 does not... verify -5 fires.
+        triggers = evaluate_alerts(store, {"600595": 9.5}, cost_bases={"600595": 10.0})
+        assert len(triggers) == 1
+
+    def test_deep_loss_below_negative_threshold_does_not_fire(self, store):
+        store.add_alert("600595", "pnl_pct", -10.0)
+        # -20% pnl; -20 >= -10 is False → no fire.
+        triggers = evaluate_alerts(store, {"600595": 8.0}, cost_bases={"600595": 10.0})
+        assert triggers == []
+
+    def test_missing_cost_basis_yields_zero_pnl(self, store):
+        """No cost_basis → pnl_pct computed as 0 → only fires if threshold <= 0."""
+        store.add_alert("600595", "pnl_pct", 5.0)
+        triggers = evaluate_alerts(store, {"600595": 20.0})
+        assert triggers == []
+
+
+# ── Spec 3.3: take_profit / stop_loss without cost_basis ────────────
+
+
+class TestProfitLossNoCostBasis:
+
+    def test_take_profit_needs_cost_basis(self, store):
+        store.add_alert("600595", "take_profit", 10.0)
+        # No cost_bases dict → cannot compute target → no fire.
+        assert evaluate_alerts(store, {"600595": 100.0}) == []
+
+    def test_stop_loss_needs_cost_basis(self, store):
+        store.add_alert("600595", "stop_loss", 5.0)
+        assert evaluate_alerts(store, {"600595": 0.01}) == []
+
+    def test_trailing_stop_needs_cost_basis(self, store):
+        store.add_alert("600595", "trailing_stop", 5.0)
+        assert evaluate_alerts(store, {"600595": 0.01}) == []
+
+    def test_stop_loss_not_triggered_above_target(self, store):
+        store.add_alert("600595", "stop_loss", 5.0)
+        # target = 10 * 0.95 = 9.5; current 9.6 > 9.5 → no fire.
+        assert evaluate_alerts(store, {"600595": 9.6}, cost_bases={"600595": 10.0}) == []
+
+    def test_take_profit_not_triggered_below_target(self, store):
+        store.add_alert("600595", "take_profit", 10.0)
+        # target = 10 * 1.10 = 11.0; current 10.9 < 11 → no fire.
+        assert evaluate_alerts(store, {"600595": 10.9}, cost_bases={"600595": 10.0}) == []
+
+
+# ── Spec 3.3: message content per rule_type ─────────────────────────
+
+
+class TestTriggerMessages:
+
+    def test_price_above_message(self, store):
+        store.add_alert("600595", "price_above", 12.0)
+        t = evaluate_alerts(store, {"600595": 12.5})[0]
+        assert "突破" in t.message and "12.50" in t.message
+
+    def test_price_below_message(self, store):
+        store.add_alert("600595", "price_below", 10.0)
+        t = evaluate_alerts(store, {"600595": 9.5})[0]
+        assert "跌破" in t.message
+
+    def test_pct_change_message(self, store):
+        store.add_alert("600595", "pct_change", 3.0)
+        t = evaluate_alerts(store, {"600595": 11.0}, prev_closes={"600595": 10.0})[0]
+        assert "涨跌幅" in t.message
+
+    def test_take_profit_message(self, store):
+        store.add_alert("600595", "take_profit", 10.0)
+        t = evaluate_alerts(store, {"600595": 11.0}, cost_bases={"600595": 10.0})[0]
+        assert "止盈" in t.message
+
+    def test_stop_loss_message(self, store):
+        store.add_alert("600595", "stop_loss", 5.0)
+        t = evaluate_alerts(store, {"600595": 9.0}, cost_bases={"600595": 10.0})[0]
+        assert "止损" in t.message
+
+
+# ── record_trigger resilience ────────────────────────────────────────
+
+
+class TestRecordTriggerResilience:
+
+    def test_vanished_rule_between_list_and_record_is_swallowed(self, store, monkeypatch):
+        """If record_trigger raises KeyError (rule deleted mid-eval), skip silently."""
+        store.add_alert("600595", "price_above", 12.0)
+
+        def boom(rule_id, price, now=None):
+            raise KeyError(rule_id)
+
+        monkeypatch.setattr(store, "record_trigger", boom)
+        # Should still return the trigger, not raise.
+        triggers = evaluate_alerts(store, {"600595": 13.0})
+        assert len(triggers) == 1

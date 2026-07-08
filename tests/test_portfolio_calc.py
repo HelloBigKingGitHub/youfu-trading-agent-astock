@@ -485,3 +485,137 @@ class TestGroupBySector:
         assert "电子设备" in out
         assert "锂电池" in out
         assert "新能源车" in out
+
+
+# ── Spec 3.2.1: today's move + signed pnl edges ─────────────────────
+
+
+class TestTodayPnlAndSignedReturns:
+
+    def test_today_pnl_pct_up(self):
+        pos = _pos(cost_basis=10.0, quantity=100)
+        m = compute_position_metrics(pos, current_price=11.0, prev_close=10.0)
+        assert m.today_pnl == pytest.approx(100.0)  # (11 - 10) * 100
+        assert m.today_pnl_pct == pytest.approx(0.1, abs=1e-4)
+
+    def test_today_pnl_pct_down(self):
+        pos = _pos(cost_basis=10.0, quantity=100)
+        m = compute_position_metrics(pos, current_price=9.0, prev_close=10.0)
+        assert m.today_pnl == pytest.approx(-100.0)
+        assert m.today_pnl_pct == pytest.approx(-0.1, abs=1e-4)
+
+    def test_zero_cost_value_yields_zero_pnl_pct(self):
+        """A position with zero quantity → cost_value 0 → pnl_pct guarded to 0."""
+        pos = _pos(cost_basis=10.0, quantity=0)
+        m = compute_position_metrics(pos, current_price=12.0, prev_close=12.0)
+        assert m.pnl_pct == 0.0
+        assert m.current_value == 0.0
+
+
+# ── Spec 3.2.2: summary today_pnl_pct is always zero (honest) ───────
+
+
+class TestPortfolioSummaryTodayField:
+
+    def test_today_pnl_pct_is_zero_by_design(self):
+        positions = [_pos(ticker="600595", cost_basis=10.0, quantity=100)]
+        s = compute_portfolio_summary(positions, {"600595": 12.0})
+        # Panel fetches prev_close separately; summary keeps today's move at 0.
+        assert s.today_pnl == 0.0
+        assert s.today_pnl_pct == 0.0
+
+    def test_returns_dataclass_type(self):
+        s = compute_portfolio_summary([], {})
+        assert isinstance(s, PortfolioSummary)
+
+
+# ── Spec 3.2.3: XIRR known-sample regression ────────────────────────
+
+
+class TestXIRRRegression:
+
+    def test_twenty_pct_gain_one_year(self):
+        """Buy $1000, worth $1200 exactly 1y later → IRR ≈ 0.20."""
+        txs = [_tx(action="buy", price=100.0, quantity=10, date_str="2025-01-01")]
+        irr = compute_xirr(txs, current_value=1200.0, as_of="2026-01-01")
+        assert irr == pytest.approx(0.2, rel=0.02)
+
+    def test_two_buys_averaged_return(self):
+        """Two staggered buys totaling $2000 out, worth $2400 → positive IRR."""
+        txs = [
+            _tx(action="buy", price=100.0, quantity=10, date_str="2025-01-01"),
+            _tx(action="buy", price=100.0, quantity=10, date_str="2025-07-01"),
+        ]
+        irr = compute_xirr(txs, current_value=2400.0, as_of="2026-01-01")
+        assert irr > 0
+
+    def test_as_of_defaults_to_today(self):
+        """No as_of → uses today; must still return a finite float."""
+        txs = [_tx(action="buy", price=100.0, quantity=10, date_str="2025-01-01")]
+        irr = compute_xirr(txs, current_value=1100.0)
+        assert isinstance(irr, float)
+
+
+# ── Spec 3.2.5/3.2.6 + equity curve integration ─────────────────────
+
+
+class TestSharpeFromEquityCurve:
+
+    def test_flat_curve_gives_zero_sharpe(self):
+        """A flat equity curve → zero daily variance → Sharpe 0."""
+        positions = [_pos(cost_basis=10.0, quantity=100, first_buy_date="2026-01-01")]
+        txs = [_tx(action="buy", price=10.0, quantity=100, date_str="2026-01-01")]
+        curve = compute_equity_curve(
+            positions, txs, {"600595": 10.0}, days=10, today="2026-01-20"
+        )
+        values = [v for _, v in curve]
+        daily_returns = [
+            (values[i] - values[i - 1]) / values[i - 1]
+            for i in range(1, len(values))
+            if values[i - 1]
+        ]
+        assert compute_sharpe(daily_returns) == 0.0
+
+    def test_brinson_total_is_sum_of_parts(self):
+        positions = [
+            _pos(ticker="600595", cost_basis=10.0, quantity=100),
+            _pos(ticker="000001", cost_basis=5.0, quantity=200),
+        ]
+        out = compute_brinson_attribution(positions, {"600595": 0.1, "000001": 0.05})
+        assert out["total"] == pytest.approx(out["selection"] + out["allocation"], abs=1e-6)
+
+
+# ── group_by_sector: real parse across multiple sectors ─────────────
+
+
+class TestGroupBySectorParse:
+
+    def test_splits_value_across_sectors(self, monkeypatch):
+        import tradingagents.dataflows.a_stock as a_stock
+
+        def fake_blocks(ticker):
+            # Each line under `## 行业` becomes one sector name (the parser
+            # takes the first token before `:` or `(`). The 概念 section is
+            # ignored.
+            return (
+                "## 概念\n"
+                "  锂电池: 1.23%\n"
+                "  新能源车: -0.45%\n"
+                "## 行业\n"
+                "  电子设备\n"
+                "  锂电池\n"
+                "  新能源车\n"
+            )
+
+        monkeypatch.setattr(a_stock, "get_concept_blocks", fake_blocks)
+        positions = [_pos(cost_basis=10.0, quantity=100)]  # value 1000
+        out = group_by_sector(positions, {"600595": 10.0})
+        # 3 sectors → 1000 / 3 each
+        assert set(out.keys()) == {"电子设备", "锂电池", "新能源车"}
+        for v in out.values():
+            assert v == pytest.approx(1000.0 / 3, abs=0.5)
+
+    def test_empty_concept_text_returns_empty_list(self):
+        from backend.core.portfolio_calc import _concept_block_to_sectors
+        assert _concept_block_to_sectors("") == []
+        assert _concept_block_to_sectors("no markers here") == []

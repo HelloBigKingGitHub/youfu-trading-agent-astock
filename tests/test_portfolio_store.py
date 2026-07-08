@@ -479,3 +479,106 @@ class TestDataclassHelpers:
         assert "buy" in VALID_TRANSACTION_ACTIONS
         assert "price_above" in VALID_ALERT_RULE_TYPES
         assert "stock" in VALID_ASSET_CLASSES
+
+
+# ── Spec 3.1.1: singleton + lock internals ──────────────────────────
+
+
+class TestPortfolioStoreInit:
+
+    def test_class_lock_is_a_lock(self):
+        """The class-level guard used by get_instance is a real lock."""
+        assert PortfolioStore._lock is not None
+        # A threading.Lock exposes acquire/release.
+        assert hasattr(PortfolioStore._lock, "acquire")
+        assert hasattr(PortfolioStore._lock, "release")
+
+    def test_instance_has_reentrant_lock(self, store):
+        """Each instance carries an RLock so nested locked calls don't deadlock."""
+        # add_position -> _audit both lock; if it weren't re-entrant this hangs.
+        store.add_position("600595", "A", 10.0, 100, "2026-01-15")
+        assert store._rlock is not None
+
+    def test_get_instance_is_thread_safe(self, tmp_portfolio):
+        """Concurrent get_instance() calls converge on a single object."""
+        results: list[PortfolioStore] = []
+
+        def grab(_: int) -> None:
+            results.append(PortfolioStore.get_instance())
+
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            list(pool.map(grab, range(50)))
+        assert len({id(r) for r in results}) == 1
+
+
+# ── Spec 3.1.2/3.1.4: update validation branches (coverage gaps) ─────
+
+
+class TestUpdateValidationBranches:
+
+    def test_update_position_validates_asset_class(self, store):
+        pos = store.add_position("600595", "A", 10.0, 100, "2026-01-15")
+        with pytest.raises(ValueError, match="asset_class"):
+            store.update_position(pos.position_id, asset_class="crypto")
+
+    def test_update_position_accepts_first_buy_date(self, store):
+        pos = store.add_position("600595", "A", 10.0, 100, "2026-01-15")
+        updated = store.update_position(pos.position_id, first_buy_date="2025-12-01")
+        assert updated.first_buy_date == "2025-12-01"
+
+    def test_update_alert_validates_rule_type(self, store):
+        rule = store.add_alert("600595", "price_above", 12.0)
+        with pytest.raises(ValueError, match="rule_type"):
+            store.update_alert(rule.rule_id, rule_type="unknown")
+
+    def test_update_alert_normalizes_ticker(self, store):
+        rule = store.add_alert("600595", "price_above", 12.0)
+        updated = store.update_alert(rule.rule_id, ticker="SH000001")
+        assert updated.ticker == "000001"
+
+
+# ── Spec 3.1.3: combined transaction filters ────────────────────────
+
+
+class TestTransactionFilterCombos:
+
+    def test_ticker_and_since_together(self, store):
+        p1 = store.add_position("600595", "A", 10.0, 100, "2026-01-01")
+        p2 = store.add_position("000001", "B", 5.0, 100, "2026-01-01")
+        store.add_transaction(p1.position_id, "2026-01-01", "buy", 10.0, 1)
+        store.add_transaction(p1.position_id, "2026-06-01", "buy", 10.0, 1)
+        store.add_transaction(p2.position_id, "2026-06-01", "buy", 5.0, 1)
+        out = store.list_transactions(ticker="600595", since="2026-03-01")
+        assert len(out) == 1
+        assert out[0].ticker == "600595"
+        assert out[0].date == "2026-06-01"
+
+    def test_alerts_ticker_and_enabled_together(self, store):
+        store.add_alert("600595", "price_above", 12.0, enabled=True)
+        store.add_alert("600595", "price_below", 8.0, enabled=False)
+        store.add_alert("000001", "price_above", 5.0, enabled=True)
+        out = store.list_alerts(ticker="600595", enabled_only=True)
+        assert len(out) == 1
+        assert out[0].rule_type == "price_above"
+
+
+# ── Read robustness against corrupt / non-list JSON ─────────────────
+
+
+class TestReadRobustness:
+
+    def test_read_corrupt_json_returns_empty(self, store, tmp_portfolio):
+        (tmp_portfolio / POSITIONS_FILE).write_text("{not valid json", encoding="utf-8")
+        assert store.list_positions() == []
+
+    def test_read_non_list_json_returns_empty(self, store, tmp_portfolio):
+        (tmp_portfolio / POSITIONS_FILE).write_text('{"a": 1}', encoding="utf-8")
+        assert store.list_positions() == []
+
+    def test_read_blank_file_returns_empty(self, store, tmp_portfolio):
+        (tmp_portfolio / ALERTS_FILE).write_text("   \n", encoding="utf-8")
+        assert store.list_alerts() == []
+
+    def test_read_missing_file_returns_empty(self, store, tmp_portfolio):
+        # Nothing written yet — files don't exist.
+        assert store.list_transactions() == []

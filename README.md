@@ -296,6 +296,16 @@ v0.2.12 起 Web UI 侧边栏新增「🔄 板块轮动」按钮，一键生成 A
 
 ---
 
+## 个人仓位跟踪
+
+v0.5.0 起 Web UI 侧边栏新增「💼 我的仓位」按钮，提供 A 股个人仓位管理 + 业绩归因全套。手工录入持仓与流水，实时计算盈亏、集中度、XIRR、Sharpe、最大回撤和 Brinson 业绩归因，并与 Bull/Bear 信号联动提醒调仓。所有数据存于 `~/.tradingagents/portfolio/`（positions / transactions / alerts / audit），与日志模块隔离。
+
+支持 4 种 CSV 格式导入（东方财富 / 同花顺 / 雪球 / generic）和 7 种预警规则（price_above / price_below / pct_change / pnl_pct / take_profit / stop_loss / trailing_stop），导出 CSV 采用 UTF-8 BOM 编码，Excel 直接打开无乱码。304 个单元测试 + 96% 覆盖率保证核心计算正确。
+
+**已知局限**：当前成本价 / 盈亏计算使用静态成本基线，不支持除权除息事件后的复权调整；该问题在 v0.5.x 后续迭代中通过基于交易流水的自动重构处理。
+
+---
+
 ## 配置说明
 
 所有配置通过 `config` 字典传入，完整选项：
