@@ -277,6 +277,7 @@ _NAV_ITEMS: list[tuple[str, str, str]] = [
     ("📝", "分析", "analyze"),
     ("📊", "批量分析", "batch"),
     ("📈", "板块轮动", "sector"),
+    ("💼", "我的仓位", "portfolio"),
     ("📋", "历史", "history"),
     ("📋", "日志", "logs"),
     ("📈", "走势图", "chart"),
@@ -437,6 +438,11 @@ elif view == "chart":
     from web.components.chart_panel import render_chart_panel
 
     render_chart_panel()
+
+elif view == "portfolio":
+    from web.components.portfolio_panel import render_portfolio_panel
+
+    render_portfolio_panel()
 
 elif view == "settings":
     render_settings_panel()
