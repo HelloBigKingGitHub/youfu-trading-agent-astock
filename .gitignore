@@ -222,3 +222,6 @@ __marimo__/
 .hermes/
 .understand-anything/
 .claude/
+
+# User's runtime logs (uncommitted - shouldn't be in repo)
+/home/youfu/.tradingagents/logs/
