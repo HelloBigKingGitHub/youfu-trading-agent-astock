@@ -1,42 +1,50 @@
 """Tests for ``web.components.chart_panel._get_realtime_quote`` (v0.4.0 fix).
 
-Original code hit ``push2.eastmoney.com`` which FlClash blocks. Fix routes
-quote through ``push2his.eastmoney.com`` ``trends2/sse`` — same endpoint as
-the browser SSE. ``_em_get`` is mocked so tests run without network access.
+v0.4.0 早期: 走 push2his ``trends2/sse`` (与浏览器 SSE 实时推送共用域).
+问题: 该端点是 SSE 长连接, Python ``requests.get`` 不带
+``Accept: text/event-stream`` 头时, 服务端先保持连接等事件再超时断开 →
+``RemoteDisconnected('Remote end closed connection without response')``.
+
+修复: 改走腾讯 ``qt.gtimg.cn`` (普通 HTTP 短连接, 字段更全). ``_tencent_quote``
+被 mock, 测试无需联网.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 
-# trends2/sse 1-day response: preClose + 2 trend rows.
-# Format: "datetime,open,close,high,low,volume,amount,avg"
-_RESPONSE = {
-    "data": {
-        "preClose": 5.75,
-        "trends": [
-            "2026-07-03 09:30,5.75,5.80,5.82,5.74,5000,2880000.0,5.78",
-            "2026-07-03 14:55,5.94,5.94,5.95,5.94,3922,2316678.00,5.922",
-        ],
-    }
+# _tencent_quote 返回结构 (a_stock.py:174)
+_QUOTE_RESPONSE = {
+    "600595": {
+        "name": "中孚实业",
+        "price": 5.94,
+        "last_close": 5.75,
+        "open": 5.80,
+        "change_pct": 3.30,
+        "high": 5.95,
+        "low": 5.74,
+    },
 }
 
 
 @pytest.fixture
-def mock_em_get():
-    with patch("tradingagents.dataflows.a_stock._em_get") as m:
-        m.return_value = MagicMock(json=MagicMock(return_value=_RESPONSE))
+def mock_tencent_quote():
+    with patch(
+        "tradingagents.dataflows.a_stock._tencent_quote",
+        return_value=_QUOTE_RESPONSE,
+    ) as m:
         yield m
 
 
-# ── 5 tests ─────────────────────────────────────────────────────────
+# ── 4 tests ─────────────────────────────────────────────────────────
 
 
-def test_quote_returns_dict_with_required_fields(mock_em_get):
+def test_quote_returns_dict_with_required_fields(mock_tencent_quote):
     from web.components.chart_panel import _get_realtime_quote
+
     r = _get_realtime_quote("600595")
     assert set(r.keys()) >= {"ticker", "price", "change_pct", "change_amount", "timestamp"}
     assert r["ticker"] == "600595"
@@ -44,57 +52,46 @@ def test_quote_returns_dict_with_required_fields(mock_em_get):
     assert isinstance(r["change_pct"], (int, float))
 
 
-def test_quote_calculates_change_pct_correctly(mock_em_get):
-    """change = (last_close − preClose) / preClose × 100."""
+def test_quote_calculates_change_pct_correctly(mock_tencent_quote):
+    """change = (price − last_close) / last_close × 100.
+
+    price=5.94, last_close=5.75 → amount=+0.19, pct ≈ +3.30.
+    """
     from web.components.chart_panel import _get_realtime_quote
+
     r = _get_realtime_quote("600595")
-    # last close = 5.94, preClose = 5.75 → amount = +0.19, pct ≈ +3.30
     assert r["price"] == pytest.approx(5.94)
     assert r["change_amount"] == pytest.approx(0.19)
     assert r["change_pct"] == pytest.approx(round(0.19 / 5.75 * 100, 2))
 
 
-def test_quote_handles_trends2_sse_response(mock_em_get):
-    """Verifies URL is push2his (not push2) + secid parsing."""
-    from web.components.chart_panel import _get_realtime_quote
-    _get_realtime_quote("600595")
-
-    called_url = mock_em_get.call_args.args[0]
-    assert called_url == "https://push2his.eastmoney.com/api/qt/stock/trends2/sse"
-    assert mock_em_get.call_args.kwargs["params"]["secid"] == "1.600595"
-
-
-def test_quote_handles_shanghai_vs_shenzhen_secid(mock_em_get):
-    """secid prefix: 1. for 6xxxxx (沪市), 0. for 0xxxxx/3xxxxx (深市)."""
+def test_quote_calls_tencent_with_ticker(mock_tencent_quote):
+    """_tencent_quote must be called with the user-supplied ticker."""
     from web.components.chart_panel import _get_realtime_quote
 
     _get_realtime_quote("600595")
-    assert mock_em_get.call_args.kwargs["params"]["secid"] == "1.600595"
-
-    _get_realtime_quote("000001")
-    assert mock_em_get.call_args.kwargs["params"]["secid"] == "0.000001"
-
-    _get_realtime_quote("300750")
-    assert mock_em_get.call_args.kwargs["params"]["secid"] == "0.300750"
+    assert mock_tencent_quote.call_args.args[0] == ["600595"]
 
 
-def test_quote_falls_back_to_first_line_if_preclose_missing():
-    """If preClose=0, fallback uses first row's open as pre_close."""
-    payload = {
-        "data": {
-            "preClose": 0,  # missing
-            "trends": [
-                "2026-07-03 09:30,7.50,7.52,7.53,7.49,1000,7520.0,7.51",
-                "2026-07-03 14:55,7.55,7.60,7.62,7.54,2000,15200.0,7.58",
-            ],
-        }
-    }
-    with patch("tradingagents.dataflows.a_stock._em_get") as m:
-        m.return_value = MagicMock(json=MagicMock(return_value=payload))
+def test_quote_raises_when_tencent_returns_empty():
+    """Empty/invalid response → ValueError (banner shows '拉取失败' warning)."""
+    with patch(
+        "tradingagents.dataflows.a_stock._tencent_quote",
+        return_value={},
+    ):
         from web.components.chart_panel import _get_realtime_quote
-        r = _get_realtime_quote("600595")
 
-    # last close = 7.60, fallback pre_close = first row open = 7.50
-    assert r["price"] == pytest.approx(7.60)
-    assert r["change_amount"] == pytest.approx(0.10)
-    assert r["change_pct"] == pytest.approx(round(0.10 / 7.50 * 100, 2))
+        with pytest.raises(ValueError, match="empty quote"):
+            _get_realtime_quote("600595")
+
+
+def test_quote_raises_when_price_is_zero():
+    """price=0 (停牌) → ValueError."""
+    with patch(
+        "tradingagents.dataflows.a_stock._tencent_quote",
+        return_value={"600595": {"price": 0, "last_close": 0, "change_pct": 0}},
+    ):
+        from web.components.chart_panel import _get_realtime_quote
+
+        with pytest.raises(ValueError, match="empty quote"):
+            _get_realtime_quote("600595")

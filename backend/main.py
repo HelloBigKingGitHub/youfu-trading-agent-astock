@@ -1,9 +1,20 @@
 """FastAPI backend for TradingAgents-Astock mobile API."""
 
+import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api import analyze_router, progress_router, result_router, history_router, sse_router, batch_router
+# Load .env so LLM client factories (tradingagents.*) see provider API keys
+# at import / first-call time. web/app.py does the same for streamlit.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+load_dotenv(_PROJECT_ROOT / ".env")
+
+from backend.api import analyze_router, progress_router, result_router, history_router, sse_router, batch_router  # noqa: E402
 
 app = FastAPI(
     title="TradingAgents-Astock API",

@@ -31,9 +31,9 @@
     --bb-accent-soft:   rgba(77, 154, 255, 0.08);
 
     /* ── Financial state ────────────────────── */
-    --bb-up:      #00d68f;
-    --bb-down:    #ff4d6d;
-    --bb-neutral: #8a96a8;
+    --bb-up:      #ff4d6d;   /* 红涨 — A 股习惯 */
+    --bb-down:    #00d68f;   /* 绿跌 */
+    --bb-neutral: #8a96a8;   /* 不动 */
 
     /* ── Radii (8/12/16 — modern fintech) ───── */
     --radius-sm: 8px;

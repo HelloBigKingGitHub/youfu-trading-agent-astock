@@ -158,13 +158,46 @@ _mootdx_client = None
 
 
 def _get_mootdx_client():
-    """Lazy-init mootdx Quotes client (TCP connection, reusable)."""
-    global _mootdx_client
-    if _mootdx_client is None:
-        from mootdx.quotes import Quotes
+    """Lazy-init mootdx Quotes client (TCP connection, reusable).
 
-        _mootdx_client = Quotes.factory(market="std")
-    return _mootdx_client
+    Wraps ``Quotes.factory()`` in a ThreadPoolExecutor with a 4s timeout to
+    avoid hanging the whole module when mootdx TCP is unreachable. On
+    timeout, leaves ``_mootdx_client`` as ``None`` so subsequent calls
+    retry (instead of caching a dead client that would freeze every
+    subsequent caller). See _mootdx_call() for the client=None handling.
+    """
+    global _mootdx_client
+    if _mootdx_client is not None:
+        return _mootdx_client
+
+    from concurrent.futures import (
+        ThreadPoolExecutor,
+        TimeoutError as _FutTimeoutError,
+    )
+    from mootdx.quotes import Quotes
+
+    def _factory():
+        return Quotes.factory(market="std")
+
+    _executor = ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="mootdx_factory"
+    )
+    _future = _executor.submit(_factory)
+    try:
+        _mootdx_client = _future.result(timeout=4)
+        return _mootdx_client
+    except _FutTimeoutError:
+        logger.warning(
+            "mootdx Quotes.factory() timed out (>4s), skipping mootdx"
+        )
+        _future.cancel()
+        # do NOT cache; let next call retry
+        return None
+    finally:
+        try:
+            _executor.shutdown(wait=False)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -508,59 +541,109 @@ def get_stock_data(
 ) -> str:
     """Get OHLCV stock price data via mootdx."""
     code = _normalize_ticker(symbol)
-
     data_source = "mootdx (TCP)"
-    try:
+
+    # 2026-07-07 fix: mootdx TCP 经常挂死（实测 30+s 无响应），
+    # 用 ThreadPoolExecutor 给它 8s 硬超时（mootdx 内部 retry 会吞掉
+    # SIGALRM 抛的 TimeoutError，所以必须用线程级 timeout 才能可靠打断）。
+    # 超时后进 sina fallback。
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeoutError
+
+    def _mootdx_call(code_):
         client = _get_mootdx_client()
-        df = client.bars(symbol=code, category=4, offset=800)
+        if client is None:
+            raise RuntimeError("mootdx unavailable")
+        df_local = client.bars(symbol=code_, category=4, offset=800)
+        return client, df_local
 
-        if df is None or df.empty:
-            raise ValueError(f"No data from mootdx for {code}")
-
-        # Drop duplicate datetime column + extra columns before reset_index
-        df = df.drop(
-            columns=["datetime", "year", "month", "day", "hour", "minute"],
-            errors="ignore",
-        )
-        df = df.reset_index()  # index 'datetime' → column 'datetime'
-        df = df.rename(
-            columns={
-                "datetime": "Date",
-                "open": "Open",
-                "close": "Close",
-                "high": "High",
-                "low": "Low",
-                "volume": "Volume",
-                "amount": "Amount",
-            }
-        )
-        df["Date"] = pd.to_datetime(df["Date"])
-
-    except Exception as e:
-        logger.warning("mootdx K-line failed for %s: %s, trying sina HTTP fallback", code, e)
-        # Fallback 1: Sina direct HTTP API
+    _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mootdx")
+    _future = _executor.submit(_mootdx_call, code)
+    try:
         try:
-            df = _sina_kline_fallback(code, start_date, end_date)
-            if df.empty:
-                raise ValueError("sina returned empty")
-            data_source = "sina HTTP (fallback)"
-        except Exception as e1:
-            logger.warning(
-                "sina fallback failed for %s: %s, trying push2his fallback",
-                code, e1,
+            client, df = _future.result(timeout=8)
+
+            if df is None or df.empty:
+                raise ValueError(f"No data from mootdx for {code}")
+
+            # Drop duplicate datetime column + extra columns before reset_index
+            df = df.drop(
+                columns=["datetime", "year", "month", "day", "hour", "minute"],
+                errors="ignore",
             )
-            # Fallback 2: push2his (added in v0.4.0)
+            df = df.reset_index()  # index 'datetime' → column 'datetime'
+            df = df.rename(
+                columns={
+                    "datetime": "Date",
+                    "open": "Open",
+                    "close": "Close",
+                    "high": "High",
+                    "low": "Low",
+                    "volume": "Volume",
+                    "amount": "Amount",
+                }
+            )
+            df["Date"] = pd.to_datetime(df["Date"])
+
+        except _FutTimeoutError:
+            logger.warning(
+                "mootdx K-line timed out (>8s) for %s, trying sina HTTP fallback", code
+            )
+            # Try to cancel the stuck mootdx worker (best-effort).
+            _future.cancel()
+            # Fallback 1: Sina direct HTTP API
             try:
-                df = _push2his_kline_fallback(code, start_date, end_date)
+                df = _sina_kline_fallback(code, start_date, end_date)
                 if df.empty:
-                    raise ValueError("push2his returned empty")
-                data_source = "push2his HTTP (fallback)"
-            except Exception as e2:
-                logger.error(
-                    "All 3 OHLCV sources failed for %s: mootdx=%s sina=%s push2his=%s",
-                    code, e, e1, e2,
+                    raise ValueError("sina returned empty")
+                data_source = "sina HTTP (fallback)"
+            except Exception as e1:
+                logger.warning(
+                    "sina fallback failed for %s: %s, trying push2his fallback",
+                    code, e1,
                 )
-                return "K线数据获取失败：mootdx/sina/push2his 均不可用，请检查网络连接"
+                # Fallback 2: push2his (added in v0.4.0)
+                try:
+                    df = _push2his_kline_fallback(code, start_date, end_date)
+                    if df.empty:
+                        raise ValueError("push2his returned empty")
+                    data_source = "push2his HTTP (fallback)"
+                except Exception as e2:
+                    logger.error(
+                        "All 3 OHLCV sources failed for %s (mootdx=timeout sina=%s push2his=%s)",
+                        code, e1, e2,
+                    )
+                    return "K线数据获取失败：mootdx/sina/push2his 均不可用，请检查网络连接"
+        except Exception as e:
+            logger.warning("mootdx K-line failed for %s: %s, trying sina HTTP fallback", code, e)
+            # Fallback 1: Sina direct HTTP API
+            try:
+                df = _sina_kline_fallback(code, start_date, end_date)
+                if df.empty:
+                    raise ValueError("sina returned empty")
+                data_source = "sina HTTP (fallback)"
+            except Exception as e1:
+                logger.warning(
+                    "sina fallback failed for %s: %s, trying push2his fallback",
+                    code, e1,
+                )
+                # Fallback 2: push2his (added in v0.4.0)
+                try:
+                    df = _push2his_kline_fallback(code, start_date, end_date)
+                    if df.empty:
+                        raise ValueError("push2his returned empty")
+                    data_source = "push2his HTTP (fallback)"
+                except Exception as e2:
+                    logger.error(
+                        "All 3 OHLCV sources failed for %s: mootdx=%s sina=%s push2his=%s",
+                        code, e, e1, e2,
+                    )
+                    return "K线数据获取失败：mootdx/sina/push2his 均不可用，请检查网络连接"
+    finally:
+        # Best-effort shutdown; daemon thread will be GC'd if still running.
+        try:
+            _executor.shutdown(wait=False)
+        except Exception:
+            pass
 
     # Filter by date range
     start_dt = pd.to_datetime(start_date)

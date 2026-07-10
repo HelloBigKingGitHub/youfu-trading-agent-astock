@@ -9,6 +9,10 @@ form.
 
 from __future__ import annotations
 
+import re
+from datetime import date
+from pathlib import Path
+
 import streamlit as st
 
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
@@ -25,9 +29,34 @@ _PROVIDERS: list[tuple[str, str]] = [
     ("xAI Grok", "xai"),
     ("Ollama（本地）", "ollama"),
 ]
-
 _PROVIDER_DISPLAY = [name for name, _ in _PROVIDERS]
 _PROVIDER_KEYS = [key for _, key in _PROVIDERS]
+
+
+def _read_pyproject_version() -> str:
+    """Read `version = "X.Y.Z"` from pyproject.toml once at module load.
+
+    The sidebar uses the *project* version (pyproject.toml) as the single
+    source of truth for the build line. If the file or pattern can't be
+    parsed (e.g. running from a non-source distribution), fall back to
+    "dev" so the badge never crashes the render.
+    """
+    try:
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        text = pyproject.read_text(encoding="utf-8")
+        match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+        if match:
+            return match.group(1)
+    except OSError:
+        pass
+    return "dev"
+
+
+# Deployed build intentionally lags the project version metadata — see
+# CHANGELOG.md. Update this constant when shipping a new release.
+_DEPLOYED_BUILD = "v0.2.13"
+_PROJECT_VERSION = _read_pyproject_version()
+_BUILD_DATE = date.today().isoformat()
 
 
 def _resolve_user_input(raw: str) -> tuple[str, str | None]:
@@ -128,9 +157,11 @@ def _render_llm_config() -> None:
 def render_sidebar_logo() -> None:
     """Render the sidebar's top logo block (glacier-blue Bloomberg style).
 
-    Composition: a contained box with version badge (top-right), two-tone
-    TRADINGAGENTS-ASTOCK title, subtitle, live indicator with pulsing dot,
-    hairline divider, and GitHub-icon author link at the bottom.
+    Composition: a contained box with two-tone TRADINGAGENTS-ASTOCK title,
+    subtitle, an inline muted build/version line (NOT floating — sits in
+    its own row below the subtitle so it never overlaps the title), live
+    indicator with pulsing dot, hairline divider, and GitHub-icon author
+    link at the bottom.
     """
     # GitHub Octocat path (inline SVG, no emoji).
     github_icon = (
@@ -148,11 +179,11 @@ def render_sidebar_logo() -> None:
     st.html(
         f"""
         <div class="bb-sidebar-block bb-logo-box">
-            <div class="bb-logo-version">v0.2.13</div>
             <div class="bb-logo-text">
                 <span class="bb-logo-text--accent">TRADING</span><span class="bb-logo-text--primary">AGENTS</span><span class="bb-logo-text--primary">-</span><span class="bb-logo-text--accent">ASTOCK</span>
             </div>
             <div class="bb-logo-subtitle">A股多 Agent 投研系统</div>
+            <div class="bb-logo-build" title="deployed build {_DEPLOYED_BUILD} · project version {_PROJECT_VERSION}">{_DEPLOYED_BUILD} · {_BUILD_DATE}</div>
             <div class="bb-logo-live">
                 <span class="bb-logo-live-dot"></span>
                 <span>实时数据 · 7 位 AI 分析师</span>

@@ -1,12 +1,12 @@
-"""Portfolio panel — main entry, dispatches 6 tabs.
+"""Portfolio panel — main entry, dispatches 7 tabs (v0.5.0 +账户管理).
 
 Top-level layout:
   1. Page header + reload button
   2. Rebalance banner (signals changed since last analysis — P0 hook)
-  3. ``st.tabs([总览, 流水, 配置, 预警, 导入/导出, 收益风险])``
+  3. ``st.tabs([总览, 流水, 配置, 预警, 导入/导出, 收益风险, 账户管理])``
 
 Each tab is a separate module (sibling files) to keep this dispatcher
-under 200 lines. Dialogs (add / edit / tx / alert) live in
+under 200 lines. Dialogs (add / edit / tx / alert / account) live in
 ``portfolio_dialogs`` and are invoked by the tabs themselves.
 
 Phase 2 deliverable. Depends on the data layer (Round 1):
@@ -14,6 +14,10 @@ Phase 2 deliverable. Depends on the data layer (Round 1):
   - ``backend.core.portfolio_calc``
   - ``backend.core.portfolio_alerts.evaluate_alerts``
   - ``backend.core.portfolio_import.{detect,parse,preview,apply}_*``
+
+v0.5.0 增量:
+  - Tab 7 账户管理（``portfolio_accounts.render_accounts_tab``）
+  - 入口第一行 ``store.ensure_default_account()``，保证下拉框永远有 default 账户
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from backend.core.portfolio_store import (
     Transaction,
     get_portfolio_store,
 )
+from web.components.portfolio_accounts import render_accounts_tab
 from web.components.portfolio_alerts_view import render_alerts_tab
 from web.components.portfolio_allocation import render_allocation_tab
 from web.components.portfolio_import_view import render_import_tab
@@ -45,6 +50,7 @@ _TAB_LABELS = [
     "🔔 预警",
     "📥 导入/导出",
     "📈 收益风险",
+    "🏦 账户管理",  # v0.5.0 新增 Tab 7
 ]
 
 
@@ -129,6 +135,10 @@ def _render_header() -> None:
 
 def render_portfolio_panel() -> None:
     """Top-level entry — called from ``web/app.py`` when ``view == "portfolio"``."""
+    # v0.5.0: 入口兜底，保证下拉框永远有 default 账户（设计 Decision 10）
+    store = get_portfolio_store()
+    store.ensure_default_account()
+
     _render_header()
 
     positions, transactions, alerts = _load_data()
@@ -163,6 +173,9 @@ def render_portfolio_panel() -> None:
         render_import_tab(positions, transactions)
     with tabs[5]:
         render_risk_tab(positions, transactions, prices)
+    with tabs[6]:
+        # v0.5.0: 账户管理 Tab 7
+        render_accounts_tab()
 
 
 __all__ = [

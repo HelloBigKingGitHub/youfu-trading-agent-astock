@@ -48,6 +48,7 @@ ASSET_CLASS_LABELS: dict[str, str] = {
     "bond": "债券",
     "overseas": "海外",
     "cash": "现金",
+    "fund": "基金",
 }
 
 TX_ACTION_LABELS: dict[str, str] = {
@@ -459,6 +460,226 @@ def open_add_alert_dialog() -> None:
     _add_alert_dialog()
 
 
+# ── v0.5.0 新增：账户对话框 ──────────────────────────────────────────────
+
+
+def validate_account_fields(
+    name: str,
+    asset_class: str,
+) -> str | None:
+    """校验新增/编辑账户的字段。返回 None = 通过；返回字符串 = 错误信息。
+
+    规则:
+      - name 非空 + 4-32 字符
+      - asset_class 必须在 VALID_ASSET_CLASSES 里
+    """
+    if not name or not name.strip():
+        return "账户名不能为空"
+    if len(name.strip()) < 4 or len(name.strip()) > 32:
+        return "账户名长度必须 4-32 字符"
+    if asset_class not in VALID_ASSET_CLASSES:
+        return f"资产类别必须是 {sorted(VALID_ASSET_CLASSES)} 之一"
+    return None
+
+
+@st.dialog("🏦 新增账户", width="medium")
+def _add_account_dialog() -> None:
+    """Modal form to add a new Account (v0.5.0).
+
+    Fields: name / broker / account_number_tail (4 位) / asset_class / notes /
+    is_default (checkbox). 提交时再次校验 + store.add_account()，同名由
+    ``store.add_account`` 抛 ValueError 阻断（设计 Decision 9）。
+    """
+    name = st.text_input(
+        "账户名 *", key="dlg_account_name",
+        placeholder="华泰证券 / 招商港股 / 现金账户",
+    ).strip()
+    broker = st.text_input(
+        "券商", key="dlg_account_broker",
+        placeholder="华泰 / 招商 / 国泰君安",
+    )
+    tail = st.text_input(
+        "账号后 4 位", key="dlg_account_tail",
+        placeholder="8888", max_chars=4,
+    )
+    asset_class = st.selectbox(
+        "大类资产 *",
+        options=list(VALID_ASSET_CLASSES),
+        index=0,
+        format_func=lambda x: ASSET_CLASS_LABELS.get(x, x),
+        key="dlg_account_asset_class",
+    )
+    notes = st.text_area("备注", key="dlg_account_notes", placeholder="(可选)")
+    is_default = st.checkbox("设为默认账户", value=False, key="dlg_account_is_default")
+
+    if st.button(
+        "✅ 提交", type="primary",
+        key="dlg_account_submit", use_container_width=True,
+    ):
+        err = validate_account_fields(name, asset_class)
+        if err:
+            st.error(err)
+            return
+        store = _get_store()
+        try:
+            store.add_account(
+                name=name,
+                broker=broker.strip(),
+                account_number_tail=tail.strip(),
+                asset_class=asset_class,
+                notes=notes.strip(),
+                is_default=bool(is_default),
+            )
+        except ValueError as exc:
+            # 同名阻断（store.add_account 校验）
+            st.error(f"保存失败: {exc}")
+            return
+        st.success(f"已添加账户 '{name}'")
+        st.rerun()
+
+
+def open_add_account_dialog() -> None:
+    """Tab 7 button → open the add-account dialog."""
+    _add_account_dialog()
+
+
+# ── 删除确认弹框（替代 session_state 二次确认 trick） ─────────────────────
+
+
+@st.dialog("🗑️ 确认删除持仓", width="medium")
+def _delete_position_dialog(position_id: str) -> None:
+    """弹框确认删除持仓（带持仓详情预览）。
+
+    替代 portfolio_overview.py 之前的 ``st.session_state[confirm_key]``
+    二次确认 trick：原生 ``st.dialog`` 提供明确视觉反馈，
+    避免 click → rerun → 按钮替换造成的"看不到反馈"和
+    playwright 报"subtree intercepts pointer events"的问题。
+
+    - 持仓详情预览（代码/名称/成本价/数量/首次买入日/账户）
+    - 红色 warning 提示不可恢复
+    - 二次确认按钮（primary 红色强调）
+    - 取消按钮
+
+    Special cases:
+      - 持仓已不存在（其它并发操作删掉了）→ ``st.error`` + 关闭按钮
+    """
+    store = _get_store()
+    pos = store.get_position(position_id)
+    if pos is None:
+        st.error("持仓不存在（可能已被删除）")
+        if st.button("关闭", key=f"del_pos_missing_close_{position_id}",
+                     use_container_width=True):
+            st.rerun()
+        return
+
+    # 持仓详情预览
+    st.warning(
+        f"**{pos.ticker} {pos.name}**\n\n"
+        f"成本价: {pos.cost_basis:.4f}\n\n"
+        f"持仓数量: {pos.quantity:,}\n\n"
+        f"首次买入: {pos.first_buy_date}\n\n"
+        f"账户: {pos.account}"
+    )
+    st.error("⚠️ 删除后将无法恢复，相关交易流水也会一并删除！")
+
+    col1, col2 = st.columns(2)
+    if col1.button(
+        "确认删除",
+        type="primary",
+        key=f"del_pos_confirm_{position_id}",
+        use_container_width=True,
+    ):
+        try:
+            store.delete_position(position_id)
+        except (KeyError, ValueError) as exc:  # noqa: BLE001
+            st.error(f"删除失败: {exc}")
+            return
+        st.success(f"已删除 {pos.ticker} {pos.name}")
+        st.rerun()
+    if col2.button(
+        "取消",
+        key=f"del_pos_cancel_{position_id}",
+        use_container_width=True,
+    ):
+        st.rerun()
+
+
+def open_delete_position_dialog(position_id: str) -> None:
+    """公开入口：portfolio_overview.py 行操作按钮调用。"""
+    _delete_position_dialog(position_id)
+
+
+@st.dialog("🗑️ 确认删除账户", width="medium")
+def _delete_account_dialog(account_id: str) -> None:
+    """弹框确认删除账户（替代 portfolio_accounts.py 的 session_state trick）。
+
+    - 显示账户名 / 资产类别 / 当前持仓数
+    - 持仓数 > 0 → 直接阻断（不显示「确认删除」按钮，避免误操作）
+    - 持仓数 = 0 → 二次确认（primary 按钮触发 ``store.delete_account``；
+      store 内部对存量持仓再做一次校验兜底）
+    """
+    store = _get_store()
+    acc = store.get_account(account_id)
+    if acc is None:
+        st.error("账户不存在（可能已被删除）")
+        if st.button("关闭", key=f"del_acc_missing_close_{account_id}",
+                     use_container_width=True):
+            st.rerun()
+        return
+
+    held = store.list_positions(account=acc.name)
+    held_count = len(held)
+    st.warning(
+        f"**{acc.name}**\n\n"
+        f"券商: {acc.broker or '—'}\n\n"
+        f"账号后 4 位: {acc.account_number_tail or '—'}\n\n"
+        f"大类资产: {acc.asset_class}\n\n"
+        f"当前持仓数: {held_count}"
+    )
+
+    if held_count > 0:
+        st.error(
+            f"⚠️ 账户 '{acc.name}' 下还有 {held_count} 只持仓，"
+            "请先迁移或删除持仓后再删除账户。"
+        )
+        if st.button(
+            "关闭",
+            key=f"del_acc_blocked_close_{account_id}",
+            use_container_width=True,
+        ):
+            st.rerun()
+        return
+
+    st.error("⚠️ 删除后无法恢复（账户本身可重建，但持仓关联会断开）！")
+
+    col1, col2 = st.columns(2)
+    if col1.button(
+        "确认删除",
+        type="primary",
+        key=f"del_acc_confirm_{account_id}",
+        use_container_width=True,
+    ):
+        try:
+            store.delete_account(account_id)
+        except ValueError as exc:
+            # store 兜底校验：万一持仓被并发迁移过来，这里仍然阻断
+            st.warning(str(exc))
+            return
+        st.success(f"已删除账户 '{acc.name}'")
+        st.rerun()
+    if col2.button(
+        "取消",
+        key=f"del_acc_cancel_{account_id}",
+        use_container_width=True,
+    ):
+        st.rerun()
+
+
+def open_delete_account_dialog(account_id: str) -> None:
+    """公开入口：portfolio_accounts.py 行操作按钮调用。"""
+    _delete_account_dialog(account_id)
+
+
 __all__ = [
     "TICKER_RE",
     "ALERT_RULE_LABELS",
@@ -468,6 +689,7 @@ __all__ = [
     "validate_position_fields",
     "validate_transaction_fields",
     "validate_alert_fields",
+    "validate_account_fields",
     "parse_pct",
     "format_pct",
     "format_currency",
@@ -476,4 +698,7 @@ __all__ = [
     "open_edit_position_dialog",
     "open_add_transaction_dialog",
     "open_add_alert_dialog",
-]
+    "open_add_account_dialog",
+    "open_delete_position_dialog",
+    "open_delete_account_dialog",
+]  # noqa: E501

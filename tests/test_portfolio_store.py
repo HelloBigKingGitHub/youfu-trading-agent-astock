@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from backend.core.portfolio_store import (
+    ACCOUNTS_FILE,
     AUDIT_FILE,
     PORTFOLIO_DIR,
     POSITIONS_FILE,
     TRANSACTIONS_FILE,
     ALERTS_FILE,
+    Account,
     AlertRule,
     PortfolioStore,
     Position,
@@ -154,6 +157,9 @@ class TestPositionCRUD:
         assert store.get_position("missing") is None
 
     def test_list_positions_filters_by_account(self, store):
+        # v0.5.0: add_position 校验 account 必须存在
+        store.add_account("main", is_default=True)
+        store.add_account("other")
         store.add_position("600595", "A", 10.0, 100, "2026-01-01", account="main")
         store.add_position("000001", "B", 5.0, 200, "2026-01-01", account="other")
         main = store.list_positions(account="main")
@@ -582,3 +588,249 @@ class TestReadRobustness:
     def test_read_missing_file_returns_empty(self, store, tmp_portfolio):
         # Nothing written yet — files don't exist.
         assert store.list_transactions() == []
+
+
+# ── Spec 3.1.5: Account CRUD (v0.5.0 increment) ────────────────────────
+
+
+class TestAccountCRUD:
+    """覆盖 v0.5.0 Account 实体全 CRUD 路径与约束。"""
+
+    def test_add_account_creates_with_default(self, store):
+        """add_account 返回带 account_id 与默认字段的 Account 实例。"""
+        acc = store.add_account(name="main", broker="中信证券")
+        assert isinstance(acc, Account)
+        assert acc.account_id and len(acc.account_id) == 12
+        assert acc.name == "main"
+        assert acc.broker == "中信证券"
+        assert acc.asset_class == "stock"
+        assert acc.is_default is False  # 自动 default 之外的新账户默认 False
+
+    def test_add_account_duplicate_name_raises(self, store):
+        """同名账户第二次 add 抛 ValueError。"""
+        store.add_account(name="main")
+        with pytest.raises(ValueError, match="已存在"):
+            store.add_account(name="main")
+
+    def test_add_account_invalid_asset_class_raises(self, store):
+        """asset_class 不在 VALID_ASSET_CLASSES 时抛 ValueError。"""
+        with pytest.raises(ValueError, match="asset_class"):
+            store.add_account(name="基金账户", asset_class="crypto")
+
+    def test_add_account_is_default_demotes_others(self, store):
+        """add_account(is_default=True) 让其它账户 is_default → False。"""
+        store.add_account(name="a", is_default=True)
+        b = store.add_account(name="b", is_default=True)
+        # 此时 a 应该让位
+        a_after = store.get_account_by_name("a")
+        assert a_after.is_default is False
+        assert b.is_default is True
+        assert b.is_default is True
+
+    def test_update_account_rejects_unknown_field(self, store):
+        """update_account 接受任意合法字段；未知字段抛 ValueError。
+
+        注：account_id 在 update_account 签名中是 positional 参数，
+        不可通过 **fields 注入（Python kwarg 绑定会先 raise TypeError），
+        因此 immutable 守卫实际无法从公开 API 触发。这里改为测试
+        同样有效的 unknown-field 守卫（与 update_position 一致）。
+        """
+        acc = store.add_account(name="x")
+        with pytest.raises(ValueError, match="unknown"):
+            store.update_account(acc.account_id, hacker_field=True)
+
+    def test_update_account_name_conflict_raises(self, store):
+        """update_account 改名时若与其它账户同名抛 ValueError。"""
+        store.add_account(name="alpha")
+        beta = store.add_account(name="beta")
+        with pytest.raises(ValueError, match="已存在"):
+            store.update_account(beta.account_id, name="alpha")
+
+    def test_delete_account_with_positions_raises(self, store):
+        """账户下还有持仓时拒绝删除，提示用户先迁移。"""
+        store.add_account(name="main", is_default=True)
+        store.add_position(
+            ticker="600595", name="A", cost_basis=10.0,
+            quantity=100, first_buy_date="2026-01-15", account="main",
+        )
+        acc = store.get_account_by_name("main")
+        with pytest.raises(ValueError, match="持仓"):
+            store.delete_account(acc.account_id)
+
+    def test_delete_account_empty_succeeds(self, store):
+        """账户无持仓时删除成功。"""
+        acc = store.add_account(name="empty")
+        store.delete_account(acc.account_id)
+        assert store.get_account_by_name("empty") is None
+
+    def test_set_default_account_demotes_old(self, store):
+        """set_default_account 把其它账户的 is_default 全置 False。"""
+        a = store.add_account(name="a", is_default=True)
+        b = store.add_account(name="b")
+        store.set_default_account(b.account_id)
+        assert store.get_account(a.account_id).is_default is False
+        assert store.get_account(b.account_id).is_default is True
+
+    def test_get_account_by_name(self, store):
+        """get_account_by_name 按 name 精确查找。"""
+        store.add_account(name="alpha")
+        store.add_account(name="beta")
+        assert store.get_account_by_name("alpha").name == "alpha"
+        assert store.get_account_by_name("beta").name == "beta"
+        assert store.get_account_by_name("gamma") is None
+
+
+# ── Spec 3.1.6: ensure_default_account 幂等逻辑 ────────────────────────────
+
+
+class TestEnsureDefaultAccount:
+    """覆盖 ensure_default_account 的 4 个分支。"""
+
+    def test_ensure_default_on_empty_filesystem_creates(self, store, tmp_portfolio):
+        """空文件系统 → 自动建 default 账户并写入 accounts.json。"""
+        # store fixture 已经 ensure 过一次了；强制重置后验证
+        path = tmp_portfolio / ACCOUNTS_FILE
+        assert path.exists()
+        # 验证 default 账户存在且 is_default=True
+        default = store.get_account_by_name("default")
+        assert default is not None
+        assert default.is_default is True
+
+    def test_ensure_default_idempotent(self, tmp_portfolio):
+        """已有 default 账户时再次 ensure 不创建新账户。"""
+        s1 = PortfolioStore()
+        first = s1.ensure_default_account()
+        s2 = PortfolioStore()
+        second = s2.ensure_default_account()
+        assert first.account_id == second.account_id
+        # accounts.json 应该只有 1 个 default
+        assert len(s2.list_accounts()) == 1
+
+    def test_ensure_default_promotes_earliest_when_no_default(
+        self, store, tmp_portfolio,
+    ):
+        """所有账户 is_default=False → 把最早创建的升为 default。"""
+        # 关闭 default 标记：手动写文件
+        path = tmp_portfolio / ACCOUNTS_FILE
+        data = [
+            {
+                "account_id": "oldest0000001",
+                "name": "oldest",
+                "broker": "",
+                "account_number_tail": "",
+                "asset_class": "stock",
+                "notes": "",
+                "is_default": False,
+                "created_at": 1.0,
+            },
+            {
+                "account_id": "newer0000002",
+                "name": "newer",
+                "broker": "",
+                "account_number_tail": "",
+                "asset_class": "stock",
+                "notes": "",
+                "is_default": False,
+                "created_at": 2.0,
+            },
+        ]
+        path.write_text(json.dumps(data), encoding="utf-8")
+        # 重置 singleton + cache，让 store 重新读盘
+        PortfolioStore._instance = None
+        s = PortfolioStore()
+        # 此时 ensure_default_account 在 __init__ 里被调用
+        promoted = s.get_account_by_name("oldest")
+        assert promoted.is_default is True
+        assert s.get_account_by_name("newer").is_default is False
+
+    def test_ensure_default_after_all_deleted_rebuilds(self, tmp_portfolio):
+        """default 账户被删光 → ensure 重建一个 default。"""
+        s1 = PortfolioStore()
+        # 删掉默认账户
+        default = s1.get_account_by_name("default")
+        s1.delete_account(default.account_id)
+        assert s1.list_accounts() == []
+        # 重新构造 → ensure 触发空文件分支
+        s2 = PortfolioStore()
+        assert s2.list_accounts()  # 不空
+        assert s2.get_account_by_name("default") is not None
+        assert s2.get_account_by_name("default").is_default is True
+
+
+# ── Spec 3.1.7: asset_class 继承与覆盖 ────────────────────────────────────
+
+
+class TestAssetClassInheritance:
+    """Position.asset_class 默认继承账户；显式传值则覆盖。"""
+
+    def test_add_position_inherits_account_asset_class(self, store):
+        """add_position 不传 asset_class → 继承账户的 asset_class。"""
+        store.add_account(name="overseas_acc", asset_class="overseas")
+        pos = store.add_position(
+            ticker="00700", name="腾讯", cost_basis=300.0,
+            quantity=100, first_buy_date="2026-01-15",
+            account="overseas_acc",
+        )
+        assert pos.asset_class == "overseas"
+
+    def test_add_position_override_asset_class(self, store):
+        """显式传 asset_class → 用传入值（覆盖账户默认）。"""
+        store.add_account(name="main", asset_class="stock")
+        pos = store.add_position(
+            ticker="161725", name="白酒基金", cost_basis=1.0,
+            quantity=1000, first_buy_date="2026-01-15",
+            account="main", asset_class="fund",
+        )
+        assert pos.asset_class == "fund"
+
+    def test_list_positions_filter_by_asset_class(self, store):
+        """list_positions(asset_class=...) 按大类过滤。"""
+        store.add_account(name="main", asset_class="stock")
+        store.add_position(
+            ticker="600595", name="A", cost_basis=10.0,
+            quantity=100, first_buy_date="2026-01-01",
+        )
+        store.add_position(
+            ticker="161725", name="B", cost_basis=1.0,
+            quantity=1000, first_buy_date="2026-01-01",
+            asset_class="fund",
+        )
+        stocks = store.list_positions(asset_class="stock")
+        funds = store.list_positions(asset_class="fund")
+        assert {p.ticker for p in stocks} == {"600595"}
+        assert {p.ticker for p in funds} == {"161725"}
+
+
+# ── Spec 3.1.8: Account persistence + sorting ─────────────────────────────
+
+
+class TestAccountPersistence:
+    """list_accounts 排序：默认置顶 + 其它按 created_at。"""
+
+    def test_accounts_file_persists(self, store, tmp_portfolio):
+        """add_account 后 accounts.json 写入磁盘。"""
+        store.add_account(name="alpha")
+        assert (tmp_portfolio / ACCOUNTS_FILE).exists()
+        data = json.loads((tmp_portfolio / ACCOUNTS_FILE).read_text())
+        assert any(d["name"] == "alpha" for d in data)
+
+    def test_list_accounts_default_first(self, store):
+        """list_accounts 把 default 账户放最前。"""
+        # store fixture 已经自动建了一个 default 账户，所以 names 里一定有 'default'
+        store.add_account(name="a", is_default=True)
+        store.add_account(name="b")
+        store.add_account(name="c")
+        names = [acc.name for acc in store.list_accounts()]
+        assert names[0] == "a"  # 新指定的 default 置顶
+        assert set(names) == {"a", "b", "c", "default"}
+
+    def test_add_account_empty_name_raises(self, store):
+        """name 为空字符串时抛 ValueError。"""
+        with pytest.raises(ValueError, match="不能为空"):
+            store.add_account(name="")
+
+    def test_update_account_empty_name_raises(self, store):
+        """update_account 改成空字符串时抛 ValueError。"""
+        acc = store.add_account(name="main")
+        with pytest.raises(ValueError, match="不能为空"):
+            store.update_account(acc.account_id, name="  ")

@@ -1,14 +1,17 @@
 """Tab 1 — 持仓总览.
 
 4 metric cards (总市值 / 总成本 / 总盈亏 / 今日盈亏) + 持仓表格 (代码/名称/
-持仓数量/成本价/现价/浮动盈亏/盈亏比例/持仓天数) + 行操作 (编辑/删除/录
-入交易) + 「录入新持仓」 按钮。
+持仓数量/成本价/现价/浮动盈亏/盈亏比例/持仓天数) + 行操作 (编辑/录入交易
+/删除) + 「录入新持仓」 按钮。
 
 设计:
   - 取现价走 ``_tencent_quote`` (复用 chart_panel 路径),失败 fallback 到成本价。
   - Metric 数字和表格 cell 都走 ``portfolio_dialogs.format_*``。
-  - 删除走 ``st.button`` 二次确认 (button 自身不阻塞,这里用 ``confirm_*``
-    session_state flag 拦截)。
+  - 删除走原生 ``st.dialog`` 弹框确认（@st.dialog 装饰函数
+    ``open_delete_position_dialog``），不再用 session_state 二次确认 trick：
+    原方案下按钮 click → rerun → 按钮立即被替换为"✓"，用户看不到视觉反馈，
+    而且 rerun 期间 playwright 会报"subtree intercepts pointer events"。
+  - 所有按钮文字带 emoji + 中文（如 "🗑️ 删除"），不再用 emoji-only 标签。
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from web.components.portfolio_dialogs import (
     format_pct,
     open_add_position_dialog,
     open_add_transaction_dialog,
+    open_delete_position_dialog,
     open_edit_position_dialog,
     pnl_color_class,
 )
@@ -198,24 +202,28 @@ def _render_positions_table(
         with c9:
             btn1, btn2, btn3 = st.columns(3)
             with btn1:
-                if st.button("✏️", key=f"edit_pos_{pos.position_id}", help="编辑"):
+                if st.button(
+                    "✏️ 编辑", key=f"edit_pos_{pos.position_id}",
+                    help="编辑该持仓",
+                ):
                     open_edit_position_dialog(pos.position_id)
             with btn2:
-                if st.button("💸", key=f"add_tx_{pos.position_id}", help="录入交易"):
+                if st.button(
+                    "💸 录入交易", key=f"add_tx_{pos.position_id}",
+                    help="为该持仓录入一条交易流水",
+                ):
                     open_add_transaction_dialog(pos.position_id)
             with btn3:
-                confirm_key = f"confirm_del_{pos.position_id}"
-                if st.session_state.get(confirm_key):
-                    if st.button("✓", key=f"del_ok_{pos.position_id}", help="确认删除",
-                                 type="primary"):
-                        from backend.core.portfolio_store import get_portfolio_store
-                        get_portfolio_store().delete_position(pos.position_id)
-                        st.session_state.pop(confirm_key, None)
-                        st.rerun()
-                else:
-                    if st.button("🗑️", key=f"del_{pos.position_id}", help="删除"):
-                        st.session_state[confirm_key] = True
-                        st.rerun()
+                # 原先用 ``st.session_state[confirm_key]`` 做 2-step 二次确认：
+                # click 🗑️ → rerun → 按钮立即替换成 ✓，用户看不到反馈。
+                # 现在改成 @st.dialog 弹框（portoflio_dialogs 里的
+                # ``open_delete_position_dialog``），有明确的视觉提示，
+                # 也避免 playwright 报告"subtree intercepts pointer events"。
+                if st.button(
+                    "🗑️ 删除", key=f"del_pos_{pos.position_id}",
+                    help="删除该持仓（弹框二次确认）",
+                ):
+                    open_delete_position_dialog(pos.position_id)
 
 
 def render_overview_tab(positions: list[Position]) -> None:

@@ -236,10 +236,12 @@ class TestLabelDicts:
         assert set(ALERT_RULE_LABELS.keys()) == set(VALID_ALERT_RULE_TYPES)
 
     @pytest.mark.unit
-    def test_asset_class_labels_four_entries(self):
+    def test_asset_class_labels_five_entries(self):
         from backend.core.portfolio_store import VALID_ASSET_CLASSES
         from web.components.portfolio_dialogs import ASSET_CLASS_LABELS
         assert set(ASSET_CLASS_LABELS.keys()) == set(VALID_ASSET_CLASSES)
+        # v0.5.0: stock/bond/overseas/cash/fund (5 个)
+        assert len(VALID_ASSET_CLASSES) == 5
 
     @pytest.mark.unit
     def test_tx_action_labels_six_entries(self):
@@ -773,14 +775,14 @@ class TestRenderPortfolioPanel:
     """Verify the main entry doesn't crash when all 6 tab modules are mocked."""
 
     @pytest.mark.unit
-    def test_renders_all_six_tabs(self, store):
+    def test_renders_all_seven_tabs(self, store):
         from contextlib import ExitStack
         from unittest.mock import MagicMock, patch
         from web.components.portfolio_panel import render_portfolio_panel
 
         _add_basic_position(store)
 
-        mock_tabs = MagicMock(return_value=[MagicMock() for _ in range(6)])
+        mock_tabs = MagicMock(return_value=[MagicMock() for _ in range(7)])
         mock_expander = MagicMock()
         mock_expander.return_value.__enter__ = MagicMock()
         mock_expander.return_value.__exit__ = MagicMock(return_value=False)

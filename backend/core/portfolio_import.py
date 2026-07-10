@@ -1,162 +1,199 @@
-"""Portfolio CSV import / export — broker format adapters.
+"""Portfolio import — CSV 导入导出 + 4 种格式映射。
 
-Supports four well-known CSV column layouts (东方财富 / 同花顺 / 雪球 /
-generic) plus export to UTF-8-BOM CSV (Excel-friendly).
+复用 backend.core.portfolio_store.PortfolioStore + Position / Account。
+纯 IO + 解析层，不直接 import a_stock（保持可独立测试）。
 
-Import flow (called by the Streamlit panel):
-  1. detect_format(csv_path)        → format name (or None)
-  2. parse_csv(csv_path, format)    → list[{ticker, name, cost, quantity, date}]
+Import flow:
+  1. detect_format(csv_path)        → 'eastmoney' | 'ths' | 'xueqiu' | 'generic' | None
+  2. parse_csv(csv_path, format)    → list[dict{ticker, name, cost, quantity, date}]
   3. preview_import(parsed, existing) → {"new": [...], "conflicts": [...], "invalid": [...]}
-  4. apply_import(preview, strategy, store) → list[Position]
-
-Each successful import writes one line to ~/.tradingagents/portfolio/audit.log
-via store._audit().
+  4. apply_import(store, preview, strategy) → list[Position]
 """
 
 from __future__ import annotations
 
 import csv
+import re
 import sys
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from tradingagents.dataflows.a_stock import _normalize_ticker  # noqa: E402
+# ── Defensive _normalize_ticker import ─────────────────────────────────────
+# a_stock 在某些精简环境（仅跑 backend 测试时）可能不可用。
+# 退化为恒等映射：原 ticker 透传，不抛 ImportError。
+try:
+    from tradingagents.dataflows.a_stock import _normalize_ticker  # type: ignore[attr-defined]  # noqa: E402
+except (ImportError, AttributeError):
+    def _normalize_ticker(ticker: str) -> str:  # type: ignore[no-redef]
+        """退化实现：去掉首尾空白，其它保持原样。"""
+        return (ticker or "").strip()
 
-if TYPE_CHECKING:
-    from backend.core.portfolio_store import PortfolioStore, Position, Transaction
 
-
-# ── format definitions ──────────────────────────────────────────────────────
-
-# Each entry maps the canonical field → list of acceptable CSV header names.
-# The first match in the header wins. Multiple aliases let us handle broker
-# variations without forcing the user to remap.
-CSV_FORMATS: dict[str, dict[str, list[str]]] = {
+# ── CSV_FORMATS: 4 种格式的列名映射 ─────────────────────────────────────────
+# 前 3 种（eastmoney / ths / xueqiu）是精确列名（string）
+# 第 4 种（generic）是候选项列表（list[str]），按顺序找第一个匹配的
+CSV_FORMATS: dict[str, dict[str, str | list[str]]] = {
     "eastmoney": {
-        "code": ["证券代码", "代码"],
-        "name": ["证券名称", "名称"],
-        "cost": ["成本价", "持仓成本价"],
-        "quantity": ["持有数量", "持仓数量", "当前数量"],
-        "date": ["建仓日期", "买入日期"],
+        "code": "证券代码",
+        "name": "证券名称",
+        "cost": "成本价",
+        "quantity": "持有数量",
+        "date": "建仓日期",
     },
     "ths": {  # 同花顺
-        "code": ["股票代码", "代码"],
-        "name": ["股票名称", "名称"],
-        "cost": ["成本价"],
-        "quantity": ["持仓数量", "当前持仓"],
-        "date": ["买入日期"],
+        "code": "股票代码",
+        "name": "股票名称",
+        "cost": "成本价",
+        "quantity": "持仓数量",
+        "date": "买入日期",
     },
     "xueqiu": {
-        "code": ["symbol", "code", "ticker"],
-        "name": ["name"],
-        "cost": ["cost_price", "cost"],
-        "quantity": ["quantity", "qty"],
-        "date": ["created_at", "buy_date"],
+        "code": "symbol",
+        "name": "name",
+        "cost": "cost_price",
+        "quantity": "quantity",
+        "date": "created_at",
     },
-    "generic": {
-        "code": ["ticker", "code", "代码", "证券代码"],
-        "name": ["name", "名称", "证券名称"],
-        "cost": ["cost", "成本价", "cost_basis", "持仓成本价"],
-        "quantity": ["quantity", "数量", "qty", "持有数量", "持仓数量"],
-        "date": ["date", "日期", "buy_date", "建仓日期", "买入日期"],
+    "generic": {  # 通用：候选项列表
+        "code": ["ticker", "code", "代码"],
+        "name": ["name", "名称"],
+        "cost": ["cost", "成本价", "cost_basis"],
+        "quantity": ["quantity", "数量", "qty"],
+        "date": ["date", "日期", "buy_date"],
     },
 }
 
 
-@dataclass
-class ImportRow:
-    """Standardized parsed row (after format-mapping)."""
-
-    ticker: str
-    name: str
-    cost: float
-    quantity: int
-    date: str  # YYYY-MM-DD
+# ── helpers ────────────────────────────────────────────────────────────────
 
 
-# ── detection ───────────────────────────────────────────────────────────────
+def _normalize_date(date_str: str) -> str:
+    """把各种日期格式转 ISO 'YYYY-MM-DD'。
+
+    支持：
+      - '2026/01/01'     → '2026-01-01'
+      - '2026-01-01'     → '2026-01-01' (passthrough)
+      - '2026.01.01'     → '2026-01-01'
+      - '2026年01月01日' → '2026-01-01'
+      - '20260101'       → '2026-01-01' (连续 8 位数字)
+      - 空 / None        → '' (调用方处理)
+    """
+    s = (date_str or "").strip()
+    if not s:
+        return ""
+    # 连续 8 位数字：YYYYMMDD
+    if re.fullmatch(r"\d{8}", s):
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    # 把各种分隔符统一成 '-'，再去掉首尾 '-'
+    normalized = re.sub(r"[/.年月日]", "-", s).strip("-")
+    parts = normalized.split("-")
+    if len(parts) == 3:
+        y, m, d = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        # 月日补零
+        if m.isdigit() and len(m) == 1:
+            m = "0" + m
+        if d.isdigit() and len(d) == 1:
+            d = "0" + d
+        return f"{y}-{m}-{d}"
+    return s
 
 
-def _read_header(path: Path, max_lines: int = 5) -> list[str]:
-    """Return the first non-empty CSV header line as a list of cell strings."""
+def _resolve_columns(
+    mapping: dict[str, str | list[str]],
+    header: list[str],
+) -> dict[str, str]:
+    """把 mapping 里的每个 canonical 字段 → CSV 实际列名。
+
+    - 精确字符串（eastmoney / ths / xueqiu）：直接 in header
+    - list 候选（generic）：按顺序找第一个 in header
+    """
+    resolved: dict[str, str] = {}
+    header_set = set(header)
+    for canonical, target in mapping.items():
+        if isinstance(target, str):
+            if target in header_set:
+                resolved[canonical] = target
+        else:  # list[str]
+            for alias in target:
+                if alias in header_set:
+                    resolved[canonical] = alias
+                    break
+    return resolved
+
+
+def _read_header(path: Path) -> list[str]:
+    """读 CSV 第一行 header，strip 空格，返回列名 list。"""
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f)
-        for _ in range(max_lines):
-            try:
-                row = next(reader)
-            except StopIteration:
-                return []
+        for row in reader:
             if row and any(c.strip() for c in row):
                 return [c.strip() for c in row]
     return []
 
 
-def detect_format(csv_path: Path) -> str | None:
-    """Score each known format against the CSV header; return the best match.
+# ── 2.1 detect_format ──────────────────────────────────────────────────────
 
-    Confidence = (matched canonical fields) / (canonical fields). Returns the
-    highest-scoring format when confidence >= 0.6, else None.
+
+def detect_format(csv_path: Path) -> str | None:
+    """读 CSV header，匹配置信度最高的格式。
+
+    算法：
+      1. 读 csv 第一行（header）
+      2. 对每种 format 计算匹配分 = 命中的必需列数
+      3. 返回匹配分最高的 format
+      4. 匹配分 < 3 → 返回 None
     """
     header = _read_header(csv_path)
     if not header:
         return None
     header_set = set(header)
-    best: tuple[float, str] | None = None
+
+    best_score = -1
+    best_fmt: str | None = None
     for fmt, mapping in CSV_FORMATS.items():
-        matched = 0
-        for aliases in mapping.values():
-            if any(alias in header_set for alias in aliases):
-                matched += 1
-        score = matched / len(mapping)
-        if best is None or score > best[0]:
-            best = (score, fmt)
-    if best is None or best[0] < 0.6:
+        score = 0
+        for canonical, target in mapping.items():
+            if isinstance(target, str):
+                if target in header_set:
+                    score += 1
+            else:
+                # 任意候选命中算 1 分
+                if any(alias in header_set for alias in target):
+                    score += 1
+        if score > best_score:
+            best_score = score
+            best_fmt = fmt
+
+    if best_score < 3:
         return None
-    return best[1]
+    return best_fmt
 
 
-# ── parsing ─────────────────────────────────────────────────────────────────
+# ── 2.2 parse_csv ──────────────────────────────────────────────────────────
 
 
-def _pick(mapping: dict[str, list[str]], header: list[str]) -> dict[str, str]:
-    """Resolve canonical → CSV column using the first alias found in header."""
-    resolved: dict[str, str] = {}
-    for canonical, aliases in mapping.items():
-        for alias in aliases:
-            if alias in header:
-                resolved[canonical] = alias
-                break
-    return resolved
+def parse_csv(csv_path: Path, format: str) -> list[dict]:
+    """解析 CSV 为标准格式 list[{ticker, name, cost, quantity, date}, ...]
 
+    format 必须已在 CSV_FORMATS 里，否则 raise ValueError。
 
-def _parse_date(s: str) -> str | None:
-    """Tolerant date parser → ISO YYYY-MM-DD; returns None on failure."""
-    s = (s or "").strip()
-    if not s:
-        return None
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d"):
-        try:
-            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None
-
-
-def parse_csv(csv_path: Path, format: str) -> list[ImportRow]:
-    """Parse a CSV file into standardized ImportRow objects.
-
-    Invalid rows (missing ticker / cost / quantity / date) are silently
-    dropped here; `preview_import` re-checks for the UI.
+    跳过规则：
+      - cost < 0
+      - quantity <= 0
+      - date 无法解析
+      - ticker 为空
     """
     if format not in CSV_FORMATS:
-        raise ValueError(f"unknown format {format!r}; expected one of {list(CSV_FORMATS)}")
+        raise ValueError(
+            f"unknown format {format!r}; expected one of {list(CSV_FORMATS)}"
+        )
     mapping = CSV_FORMATS[format]
-    out: list[ImportRow] = []
+    out: list[dict] = []
+
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f)
         try:
@@ -164,195 +201,211 @@ def parse_csv(csv_path: Path, format: str) -> list[ImportRow]:
         except StopIteration:
             return []
         header = [h.strip() for h in header]
-        resolved = _pick(mapping, header)
-        if "code" not in resolved:
+
+        # 字段 → 列名 映射
+        col_map = _resolve_columns(mapping, header)
+        if "code" not in col_map:
             return []
-        code_idx = header.index(resolved["code"])
-        name_idx = header.index(resolved["name"]) if "name" in resolved else -1
-        cost_idx = header.index(resolved["cost"]) if "cost" in resolved else -1
-        qty_idx = header.index(resolved["quantity"]) if "quantity" in resolved else -1
-        date_idx = header.index(resolved["date"]) if "date" in resolved else -1
+
+        # 各字段的列 idx（缺失字段用 -1 标记）
+        idx_code = header.index(col_map["code"])
+        idx_name = header.index(col_map["name"]) if "name" in col_map else -1
+        idx_cost = header.index(col_map["cost"]) if "cost" in col_map else -1
+        idx_qty = header.index(col_map["quantity"]) if "quantity" in col_map else -1
+        idx_date = header.index(col_map["date"]) if "date" in col_map else -1
+
         for raw in reader:
             if not raw or not any(c.strip() for c in raw):
                 continue
             try:
-                code = (raw[code_idx] if code_idx < len(raw) else "").strip()
+                # ticker
+                code = (
+                    raw[idx_code] if idx_code < len(raw) else ""
+                ).strip()
                 if not code:
                     continue
                 ticker = _normalize_ticker(code)
-                name = (raw[name_idx] if name_idx >= 0 and name_idx < len(raw) else "").strip()
-                cost = float(raw[cost_idx]) if cost_idx >= 0 and cost_idx < len(raw) and raw[cost_idx] else 0.0
-                qty_raw = raw[qty_idx] if qty_idx >= 0 and qty_idx < len(raw) else ""
-                quantity = int(float(qty_raw)) if qty_raw else 0
-                date_raw = raw[date_idx] if date_idx >= 0 and date_idx < len(raw) else ""
-                date_iso = _parse_date(date_raw)
-                if not date_iso:
-                    continue  # invalid date → drop
-                if quantity <= 0 or cost < 0:
+
+                # name
+                name = (
+                    raw[idx_name] if 0 <= idx_name < len(raw) else ""
+                ).strip()
+
+                # cost
+                cost_raw = raw[idx_cost] if 0 <= idx_cost < len(raw) else ""
+                if not cost_raw:
+                    continue
+                cost = float(cost_raw)
+
+                # quantity
+                qty_raw = raw[idx_qty] if 0 <= idx_qty < len(raw) else ""
+                if not qty_raw:
+                    continue
+                quantity = int(float(qty_raw))
+
+                # date
+                date_raw = raw[idx_date] if 0 <= idx_date < len(raw) else ""
+                date_iso = _normalize_date(date_raw)
+                if not date_iso or date_iso == "":
+                    continue
+
+                # 跳过 cost < 0 或 quantity <= 0 的行
+                if cost < 0 or quantity <= 0:
                     continue
             except (ValueError, IndexError):
                 continue
+
             out.append(
-                ImportRow(
-                    ticker=ticker,
-                    name=name,
-                    cost=cost,
-                    quantity=quantity,
-                    date=date_iso,
-                )
+                {
+                    "ticker": ticker,
+                    "name": name,
+                    "cost": cost,
+                    "quantity": quantity,
+                    "date": date_iso,
+                }
             )
+
     return out
 
 
-# ── preview ─────────────────────────────────────────────────────────────────
+# ── 2.3 preview_import ─────────────────────────────────────────────────────
 
 
 def preview_import(
-    parsed: list[ImportRow],
-    existing_positions: list["Position"],
-) -> dict[str, Any]:
-    """Categorize parsed rows into new / conflicts / invalid buckets.
+    parsed: list[dict],
+    existing_positions: list,  # list[Position]
+) -> dict:
+    """把 parsed 分类成 new / conflicts / invalid。
 
-    `new` = ticker not currently held.
-    `conflicts` = ticker already exists; caller decides overwrite/skip/merge.
-    `invalid` = cost <= 0 / quantity <= 0 / bad ticker.
+    Returns:
+      {
+        "new":       [parsed_item, ...],                # store 里没有的 ticker
+        "conflicts": [
+            {"parsed": {...}, "existing": Position, "ticker": "600595"},
+            ...
+        ],
+        "invalid":   [parsed_item, ...],                # 校验失败的行
+      }
     """
-    existing_by_ticker: dict[str, "Position"] = {p.ticker: p for p in existing_positions}
-    new_rows: list[ImportRow] = []
-    conflicts: list[dict[str, Any]] = []
-    invalid: list[dict[str, Any]] = []
-    for row in parsed:
-        if not row.ticker or row.cost <= 0 or row.quantity <= 0:
-            invalid.append({"row": row, "reason": "missing or invalid fields"})
+    existing_by_ticker: dict[str, Any] = {
+        p.ticker: p for p in existing_positions
+    }
+    new_rows: list[dict] = []
+    conflicts: list[dict] = []
+    invalid: list[dict] = []
+
+    for item in parsed:
+        ticker = item.get("ticker", "")
+        cost = item.get("cost", 0.0)
+        quantity = item.get("quantity", 0)
+
+        # 二次校验：防御 parse_csv 漏掉的边缘 case
+        if not ticker or cost < 0 or quantity <= 0:
+            invalid.append(item)
             continue
-        if row.ticker in existing_by_ticker:
+
+        if ticker in existing_by_ticker:
             conflicts.append(
                 {
-                    "parsed": row,
-                    "existing": existing_by_ticker[row.ticker],
-                    "resolution": "skip",  # default; user can change
+                    "parsed": item,
+                    "existing": existing_by_ticker[ticker],
+                    "ticker": ticker,
                 }
             )
         else:
-            new_rows.append(row)
+            new_rows.append(item)
+
     return {"new": new_rows, "conflicts": conflicts, "invalid": invalid}
 
 
-# ── apply ───────────────────────────────────────────────────────────────────
+# ── 2.4 apply_import ───────────────────────────────────────────────────────
 
 
 def apply_import(
-    preview: dict[str, Any],
-    resolution_strategy: str,
-    store: "PortfolioStore",
-    file_path: str | None = None,
-    row_count: int | None = None,
-) -> list["Position"]:
-    """Persist previewed rows into `store` according to resolution_strategy.
+    store: Any,  # PortfolioStore
+    preview: dict,
+    resolution_strategy: str,  # 'overwrite' | 'skip' | 'merge'
+) -> list:
+    """把 preview_import 结果应用到 store。
 
-    resolution_strategy: "overwrite" | "skip" | "merge"
-      - overwrite: replace existing position's cost_basis/quantity/first_buy_date
-      - skip:      keep existing position untouched (conflict ignored)
-      - merge:     weighted-average the cost basis, sum the quantity
-                   (uses existing.first_buy_date as the historical anchor)
+    resolution_strategy:
+      - 'overwrite': 先 delete existing_position，再 add_position (parsed)
+      - 'skip':      只 add preview['new']，跳过 conflicts
+      - 'merge':     MVP 暂不实现 → raise NotImplementedError
 
-    New rows are inserted via `add_position`. Returns the list of created
-    or updated Position objects.
+    写 store._audit() 记录 file_path + row_count + conflicts + strategy。
     """
-    if resolution_strategy not in ("overwrite", "skip", "merge"):
+    if resolution_strategy == "merge":
+        raise NotImplementedError(
+            "merge 策略在 MVP 中暂不实现：quantity 累加 + cost 加权平均逻辑复杂，"
+            "请先用 overwrite 或 skip。UI 不应让用户选 merge。"
+        )
+    if resolution_strategy not in ("overwrite", "skip"):
         raise ValueError(
-            f"resolution_strategy must be overwrite|skip|merge, got {resolution_strategy!r}"
-        )
-    created: list["Position"] = []
-
-    for row in preview.get("new", []):
-        created.append(
-            store.add_position(
-                ticker=row.ticker,
-                name=row.name,
-                cost_basis=row.cost,
-                quantity=row.quantity,
-                first_buy_date=row.date,
-            )
+            f"resolution_strategy must be 'overwrite' | 'skip' | 'merge', "
+            f"got {resolution_strategy!r}"
         )
 
+    added: list = []
+
+    # 1) new 行：直接 add
+    for item in preview.get("new", []):
+        pos = store.add_position(
+            ticker=item["ticker"],
+            name=item.get("name", ""),
+            cost_basis=item["cost"],
+            quantity=item["quantity"],
+            first_buy_date=item["date"],
+        )
+        added.append(pos)
+
+    # 2) conflicts：按 strategy 处理
     for entry in preview.get("conflicts", []):
-        parsed: ImportRow = entry["parsed"]
-        existing: "Position" = entry["existing"]
+        parsed_item: dict = entry["parsed"]
+        existing = entry["existing"]
         if resolution_strategy == "skip":
             continue
-        if resolution_strategy == "overwrite":
-            updated = store.update_position(
-                existing.position_id,
-                cost_basis=parsed.cost,
-                quantity=parsed.quantity,
-                last_trade_date=max(existing.last_trade_date, parsed.date),
-            )
-            created.append(updated)
-        elif resolution_strategy == "merge":
-            total_qty = existing.quantity + parsed.quantity
-            if total_qty <= 0:
-                continue
-            merged_cost = (
-                existing.cost_basis * existing.quantity
-                + parsed.cost * parsed.quantity
-            ) / total_qty
-            updated = store.update_position(
-                existing.position_id,
-                cost_basis=round(merged_cost, 4),
-                quantity=total_qty,
-                last_trade_date=max(existing.last_trade_date, parsed.date),
-            )
-            created.append(updated)
+        # overwrite：先 delete 再 add
+        store.delete_position(existing.position_id)
+        pos = store.add_position(
+            ticker=parsed_item["ticker"],
+            name=parsed_item.get("name", ""),
+            cost_basis=parsed_item["cost"],
+            quantity=parsed_item["quantity"],
+            first_buy_date=parsed_item["date"],
+        )
+        added.append(pos)
 
-    # Audit log line — best-effort, non-critical if it fails.
+    # 3) audit
     store._audit(
-        f"apply_import file={file_path or '<in-memory>'} "
-        f"rows={row_count if row_count is not None else len(created)} "
-        f"strategy={resolution_strategy} "
-        f"applied={len(created)} "
+        f"apply_import strategy={resolution_strategy} "
+        f"new={len(preview.get('new', []))} "
         f"conflicts={len(preview.get('conflicts', []))} "
-        f"invalid={len(preview.get('invalid', []))}"
+        f"invalid={len(preview.get('invalid', []))} "
+        f"applied={len(added)}"
     )
-    return created
+    return added
 
 
-# ── export ──────────────────────────────────────────────────────────────────
-
-
-def _write_bom_csv(path: Path, header: list[str], rows: list[list[Any]]) -> Path:
-    """Write UTF-8 BOM CSV (Excel auto-detects encoding)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        for r in rows:
-            writer.writerow(r)
-    return path
+# ── 2.5 export_csv ─────────────────────────────────────────────────────────
 
 
 def export_csv(
-    positions: list["Position"],
-    transactions: list["Transaction"] | None = None,
-    output_dir: Path | None = None,
-    current_prices: dict[str, float] | None = None,
+    positions: list,  # list[Position]
+    transactions: list | None = None,  # list[Transaction]
 ) -> Path:
-    """Export positions (with optional computed columns) to UTF-8 BOM CSV.
+    """生成 UTF-8 BOM CSV 文件，返回文件路径。
 
-    Output columns: 代码, 名称, 成本价, 持仓数量, 持仓金额, 浮动盈亏,
-    盈亏比例, 首次买入日期, 备注. When `transactions` is provided, an
-    extra `交易笔数` column is appended.
+    临时文件路径：/tmp/portfolio_export_YYYYMMDD_HHMMSS.csv
 
-    Returns the absolute path of the written file.
+    列：代码, 名称, 成本价, 持仓数量, 持仓金额, 浮动盈亏, 盈亏比例,
+        首次买入日期, 账户, 备注
+
+    "持仓金额" / "浮动盈亏" / "盈亏比例" 留空 —— 由 UI 层 import 行情后填。
     """
-    out_dir = output_dir or (Path.home() / ".tradingagents" / "portfolio" / "exports")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = out_dir / f"positions_{ts}.csv"
-    prices = current_prices or {}
-    tx_counts: dict[str, int] = {}
-    for tx in transactions or []:
-        tx_counts[tx.ticker] = tx_counts.get(tx.ticker, 0) + 1
-    include_tx = bool(transactions)
+    out_path = Path(f"/tmp/portfolio_export_{ts}.csv")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     header = [
         "代码",
@@ -363,45 +416,48 @@ def export_csv(
         "浮动盈亏",
         "盈亏比例",
         "首次买入日期",
-        "最后交易日期",
+        "账户",
         "备注",
     ]
-    if include_tx:
-        header.append("交易笔数")
 
     rows: list[list[Any]] = []
     for p in positions:
-        price = prices.get(p.ticker, p.cost_basis)
-        value = round(price * p.quantity, 2)
-        pnl = round((price - p.cost_basis) * p.quantity, 2)
-        pnl_pct = round((price - p.cost_basis) / p.cost_basis * 100, 2) if p.cost_basis else 0.0
-        row = [
-            p.ticker,
-            p.name,
-            round(p.cost_basis, 4),
-            p.quantity,
-            value,
-            pnl,
-            f"{pnl_pct:+.2f}%",
-            p.first_buy_date,
-            p.last_trade_date,
-            p.notes,
-        ]
-        if include_tx:
-            row.append(tx_counts.get(p.ticker, 0))
-        rows.append(row)
+        rows.append(
+            [
+                p.ticker,
+                p.name,
+                round(float(p.cost_basis), 4),
+                int(p.quantity),
+                "",  # 持仓金额 → UI 行情后填
+                "",  # 浮动盈亏 → UI 行情后填
+                "",  # 盈亏比例 → UI 行情后填
+                p.first_buy_date,
+                getattr(p, "account", "default"),
+                getattr(p, "notes", ""),
+            ]
+        )
 
-    return _write_bom_csv(out_path, header, rows)
+    # UTF-8 BOM + csv
+    with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+    return out_path
 
 
-def export_transactions_csv(
-    transactions: list["Transaction"],
-    output_dir: Path | None = None,
-) -> Path:
-    """Export the transactions log to UTF-8 BOM CSV."""
-    out_dir = output_dir or (Path.home() / ".tradingagents" / "portfolio" / "exports")
+# ── 2.6 export_transactions_csv ────────────────────────────────────────────
+
+
+def export_transactions_csv(transactions: list) -> Path:
+    """导出交易流水到 UTF-8 BOM CSV。
+
+    列：日期, 代码, 动作, 价格, 数量, 手续费, 账户, 备注
+    """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = out_dir / f"transactions_{ts}.csv"
+    out_path = Path(f"/tmp/portfolio_transactions_export_{ts}.csv")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
     header = [
         "日期",
         "代码",
@@ -409,22 +465,30 @@ def export_transactions_csv(
         "价格",
         "数量",
         "手续费",
-        "金额",
+        "账户",
         "备注",
     ]
+
+    # 流水本身没有 account 字段（账户引用在 Position 里），
+    # 这里保留空白让 UI 层 join Position 补全，或由调用方预先把 account 写到 tx.
     rows: list[list[Any]] = []
     for tx in sorted(transactions, key=lambda t: t.date, reverse=True):
-        amount = round(tx.price * tx.quantity, 2)
         rows.append(
             [
                 tx.date,
                 tx.ticker,
                 tx.action,
-                round(tx.price, 4),
-                tx.quantity,
-                round(tx.fees, 2),
-                amount,
-                tx.notes,
+                round(float(tx.price), 4),
+                int(tx.quantity),
+                round(float(getattr(tx, "fees", 0.0)), 2),
+                getattr(tx, "account", ""),
+                getattr(tx, "notes", ""),
             ]
         )
-    return _write_bom_csv(out_path, header, rows)
+
+    with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+    return out_path

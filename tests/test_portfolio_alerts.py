@@ -1,4 +1,7 @@
-"""Tests for backend.core.portfolio_alerts."""
+"""Tests for backend.core.portfolio_alerts (v0.5.0 MVP).
+
+MVP 只实现 price_above / price_below；其它 5 种 type 抛 NotImplementedError。
+"""
 
 from __future__ import annotations
 
@@ -9,6 +12,7 @@ import pytest
 from backend.core.portfolio_alerts import (
     ANTI_REPEAT_WINDOW_SEC,
     AlertTrigger,
+    evaluate_alert,
     evaluate_alerts,
     format_trigger_message,
 )
@@ -20,306 +24,224 @@ from backend.core.portfolio_store import PortfolioStore
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
+    """隔离 PortfolioStore 到 tmp_path，每个测试独立。"""
     monkeypatch.setattr("backend.core.portfolio_store.PORTFOLIO_DIR", tmp_path)
     monkeypatch.setattr("backend.core.portfolio_store.PortfolioStore._instance", None)
     return PortfolioStore()
 
 
-# ── trigger per rule_type ───────────────────────────────────────────
+# ── 单条评估 evaluate_alert ────────────────────────────────────────
 
 
-class TestPriceAbove:
+class TestEvaluateAlert:
+    """MVP 单条规则评估。"""
 
-    def test_triggers_when_price_above_threshold(self, store):
+    def test_price_above_triggers_when_above(self, store):
+        """price > threshold 触发 price_above."""
+        rule = store.add_alert("600595", "price_above", 12.0)
+        trigger = evaluate_alert(rule, current_price=12.5)
+        assert trigger is not None
+        assert trigger.rule_type == "price_above"
+        assert trigger.threshold == 12.0
+        assert trigger.current_value == 12.5
+        assert "突破" in trigger.message
+
+    def test_price_above_does_not_trigger_at_threshold(self, store):
+        """price == threshold → 不触发（MVP 用严格 >）。"""
+        rule = store.add_alert("600595", "price_above", 12.0)
+        assert evaluate_alert(rule, current_price=12.0) is None
+
+    def test_price_above_does_not_trigger_below(self, store):
+        """price < threshold → 不触发。"""
+        rule = store.add_alert("600595", "price_above", 12.0)
+        assert evaluate_alert(rule, current_price=11.99) is None
+
+    def test_price_below_triggers_when_below(self, store):
+        """price < threshold 触发 price_below."""
+        rule = store.add_alert("600595", "price_below", 10.0)
+        trigger = evaluate_alert(rule, current_price=9.5)
+        assert trigger is not None
+        assert trigger.rule_type == "price_below"
+        assert trigger.current_value == 9.5
+        assert "跌破" in trigger.message
+
+    def test_price_below_does_not_trigger_at_threshold(self, store):
+        """price == threshold → 不触发（MVP 用严格 <）。"""
+        rule = store.add_alert("600595", "price_below", 10.0)
+        assert evaluate_alert(rule, current_price=10.0) is None
+
+    def test_price_below_does_not_trigger_above(self, store):
+        """price > threshold → 不触发。"""
+        rule = store.add_alert("600595", "price_below", 10.0)
+        assert evaluate_alert(rule, current_price=10.5) is None
+
+    def test_pct_change_raises_not_implemented(self, store):
+        """pct_change 在 MVP 抛 NotImplementedError。"""
+        rule = store.add_alert("600595", "pct_change", 3.0)
+        with pytest.raises(NotImplementedError):
+            evaluate_alert(rule, current_price=10.0)
+
+    def test_pnl_pct_raises_not_implemented(self, store):
+        """pnl_pct 在 MVP 抛 NotImplementedError。"""
+        rule = store.add_alert("600595", "pnl_pct", -10.0)
+        with pytest.raises(NotImplementedError):
+            evaluate_alert(rule, current_price=10.0)
+
+    def test_take_profit_raises_not_implemented(self, store):
+        """take_profit 在 MVP 抛 NotImplementedError。"""
+        rule = store.add_alert("600595", "take_profit", 10.0)
+        with pytest.raises(NotImplementedError):
+            evaluate_alert(rule, current_price=10.0)
+
+    def test_stop_loss_raises_not_implemented(self, store):
+        """stop_loss 在 MVP 抛 NotImplementedError。"""
+        rule = store.add_alert("600595", "stop_loss", 10.0)
+        with pytest.raises(NotImplementedError):
+            evaluate_alert(rule, current_price=10.0)
+
+    def test_trailing_stop_raises_not_implemented(self, store):
+        """trailing_stop 在 MVP 抛 NotImplementedError。"""
+        rule = store.add_alert("600595", "trailing_stop", 10.0)
+        with pytest.raises(NotImplementedError):
+            evaluate_alert(rule, current_price=10.0)
+
+    def test_trigger_message_format(self, store):
+        """trigger.message 包含 ticker、threshold、current price 的中文描述。"""
+        rule = store.add_alert("600595", "price_above", 12.0)
+        trigger = evaluate_alert(rule, current_price=12.5)
+        assert "12.00" in trigger.message  # threshold
+        assert "12.50" in trigger.message  # current price
+        # pct 变化：(12.5 - 12.0) / 12.0 ≈ 4.17%
+        assert "4.17%" in trigger.message
+
+    def test_trigger_message_threshold_zero_no_pct_suffix(self):
+        """threshold=0 时不附加 pct 变化（避免除零）。
+
+        直接构造 AlertRule（绕过 add_alert 的 threshold!=0 校验）。
+        """
+        from backend.core.portfolio_store import AlertRule
+        rule = AlertRule(
+            rule_id="r0", ticker="600595", rule_type="price_above",
+            threshold=0.0,
+        )
+        trigger = evaluate_alert(rule, current_price=5.0)
+        assert trigger is not None
+        # message 没有括号包裹的百分比
+        assert "(+" not in trigger.message  # 无 +X.XX% 后缀
+
+
+# ── 批量评估 evaluate_alerts ───────────────────────────────────────
+
+
+class TestEvaluateAlertsBatch:
+    """批量评估 + anti-repeat + record_trigger。"""
+
+    def test_empty_alerts_returns_empty(self, store):
+        """无任何预警规则 → 空 list."""
+        assert evaluate_alerts(store, {"600595": 10.0}) == []
+
+    def test_all_rules_trigger_when_conditions_met(self, store):
+        """3 条规则全部满足条件 → 返回 3 个 trigger."""
         store.add_alert("600595", "price_above", 12.0)
-        triggers = evaluate_alerts(store, {"600595": 12.5})
-        assert len(triggers) == 1
-        assert triggers[0].rule_type == "price_above"
-        assert triggers[0].current_value == 12.5
+        store.add_alert("000001", "price_below", 5.0)
+        store.add_alert("300001", "price_above", 8.0)
+        triggers = evaluate_alerts(
+            store,
+            current_prices={"600595": 13.0, "000001": 4.5, "300001": 9.0},
+        )
+        assert len(triggers) == 3
+        tickers = {t.ticker for t in triggers}
+        assert tickers == {"600595", "000001", "300001"}
 
-    def test_triggers_at_exact_threshold(self, store):
-        """Boundary: price == threshold → still triggers (>=)."""
-        store.add_alert("600595", "price_above", 12.0)
-        triggers = evaluate_alerts(store, {"600595": 12.0})
-        assert len(triggers) == 1
-
-    def test_does_not_trigger_below_threshold(self, store):
-        store.add_alert("600595", "price_above", 12.0)
-        assert evaluate_alerts(store, {"600595": 11.99}) == []
-
-
-class TestPriceBelow:
-
-    def test_triggers_when_price_below_threshold(self, store):
-        store.add_alert("600595", "price_below", 10.0)
-        triggers = evaluate_alerts(store, {"600595": 9.5})
-        assert len(triggers) == 1
-
-    def test_does_not_trigger_above_threshold(self, store):
-        store.add_alert("600595", "price_below", 10.0)
-        assert evaluate_alerts(store, {"600595": 10.5}) == []
-
-
-class TestPctChange:
-
-    def test_triggers_on_large_up_move(self, store):
-        store.add_alert("600595", "pct_change", 3.0)
-        triggers = evaluate_alerts(store, {"600595": 11.0}, prev_closes={"600595": 10.0})
-        # +10% change vs threshold 3% → triggers
-        assert len(triggers) == 1
-
-    def test_triggers_on_large_down_move(self, store):
-        store.add_alert("600595", "pct_change", 3.0)
-        triggers = evaluate_alerts(store, {"600595": 9.0}, prev_closes={"600595": 10.0})
-        # -10% change vs threshold 3% → triggers (abs)
-        assert len(triggers) == 1
-
-    def test_no_trigger_for_small_move(self, store):
-        store.add_alert("600595", "pct_change", 5.0)
-        triggers = evaluate_alerts(store, {"600595": 10.2}, prev_closes={"600595": 10.0})
-        assert triggers == []
-
-
-class TestPnlPct:
-
-    def test_triggers_when_gain_exceeds_threshold(self, store):
-        store.add_alert("600595", "pnl_pct", 5.0)
-        # current 11, cost 10 → +10% pnl vs threshold 5%
-        triggers = evaluate_alerts(store, {"600595": 11.0}, cost_bases={"600595": 10.0})
-        assert len(triggers) == 1
-
-    def test_does_not_trigger_below_threshold(self, store):
-        store.add_alert("600595", "pnl_pct", 20.0)
-        triggers = evaluate_alerts(store, {"600595": 10.5}, cost_bases={"600595": 10.0})
-        # +5% < 20% threshold
-        assert triggers == []
-
-
-class TestTakeProfitStopLoss:
-
-    def test_take_profit_triggers(self, store):
-        """Take profit @ +10%: current 11, cost 10 → triggers."""
-        store.add_alert("600595", "take_profit", 10.0)
-        triggers = evaluate_alerts(store, {"600595": 11.0}, cost_bases={"600595": 10.0})
-        assert len(triggers) == 1
-
-    def test_stop_loss_triggers(self, store):
-        """Stop loss @ -5%: current 9, cost 10 → triggers."""
-        store.add_alert("600595", "stop_loss", 5.0)
-        triggers = evaluate_alerts(store, {"600595": 9.0}, cost_bases={"600595": 10.0})
-        assert len(triggers) == 1
-
-    def test_trailing_stop_same_as_stop_loss_in_v1(self, store):
-        store.add_alert("600595", "trailing_stop", 5.0)
-        triggers = evaluate_alerts(store, {"600595": 9.0}, cost_bases={"600595": 10.0})
-        assert len(triggers) == 1
-
-
-# ── anti-repeat / disabled ──────────────────────────────────────────
-
-
-class TestAntiRepeat:
-
-    def test_does_not_re_trigger_within_window(self, store):
-        store.add_alert("600595", "price_above", 12.0)
+    def test_anti_repeat_within_300s(self, store):
+        """300 秒内同一规则不重复触发。"""
+        rule = store.add_alert("600595", "price_above", 12.0)
         now = 1_000_000.0
-        # First trigger succeeds.
-        first = evaluate_alerts(store, {"600595": 12.5}, now=now)
-        assert len(first) == 1
-        # Second call 60s later should NOT fire (anti-repeat).
-        second = evaluate_alerts(store, {"600595": 12.5}, now=now + 60)
-        assert second == []
+        # 第一次触发
+        triggers1 = evaluate_alerts(
+            store, {"600595": 13.0}, now=now,
+        )
+        assert len(triggers1) == 1
+        # 200 秒后再次评估 → 仍在 300s 窗口内 → 跳过
+        triggers2 = evaluate_alerts(
+            store, {"600595": 14.0}, now=now + 200,
+        )
+        assert len(triggers2) == 0
+        # trigger_count 仍为 1
+        assert store.list_alerts(ticker="600595")[0].trigger_count == 1
 
-    def test_triggers_again_after_window_expires(self, store):
-        store.add_alert("600595", "price_above", 12.0)
+    def test_anti_repeat_expires_after_300s(self, store):
+        """300 秒后 anti-repeat 窗口过期 → 重新触发。"""
+        rule = store.add_alert("600595", "price_above", 12.0)
         now = 1_000_000.0
-        evaluate_alerts(store, {"600595": 12.5}, now=now)
-        # Way after the cooldown window
-        later = evaluate_alerts(store, {"600595": 12.5}, now=now + ANTI_REPEAT_WINDOW_SEC + 1)
-        assert len(later) == 1
+        # 第一次
+        triggers1 = evaluate_alerts(store, {"600595": 13.0}, now=now)
+        assert len(triggers1) == 1
+        # 350 秒后（> 300s）→ 重新触发
+        triggers2 = evaluate_alerts(store, {"600595": 14.0}, now=now + 350)
+        assert len(triggers2) == 1
+        assert triggers2[0].current_value == 14.0
+        # trigger_count = 2
+        assert store.list_alerts(ticker="600595")[0].trigger_count == 2
 
-    def test_record_trigger_increments_count(self, store):
-        store.add_alert("600595", "price_above", 12.0)
-        now = 1_000_000.0
-        evaluate_alerts(store, {"600595": 12.5}, now=now)
-        # After window expires, trigger again → count == 2
-        evaluate_alerts(store, {"600595": 12.5}, now=now + ANTI_REPEAT_WINDOW_SEC + 1)
-        rule = store.list_alerts(ticker="600595")[0]
-        assert rule.trigger_count == 2
-
-
-class TestDisabledAndMissing:
-
-    def test_disabled_alert_does_not_trigger(self, store):
+    def test_disabled_alerts_skipped(self, store):
+        """enabled=False 的规则不被评估。"""
         store.add_alert("600595", "price_above", 12.0, enabled=False)
-        triggers = evaluate_alerts(store, {"600595": 12.5})
-        assert triggers == []
+        assert evaluate_alerts(store, {"600595": 13.0}) == []
 
-    def test_missing_price_skips_rule(self, store):
+    def test_missing_price_skipped(self, store):
+        """current_prices 缺 ticker → 跳过该规则（不抛错）。"""
         store.add_alert("600595", "price_above", 12.0)
-        # No price for 600595 in the snapshot
-        assert evaluate_alerts(store, {"000001": 12.5}) == []
-
-    def test_only_enabled_rules_are_evaluated(self, store):
-        store.add_alert("600595", "price_above", 12.0, enabled=True)
-        store.add_alert("000001", "price_above", 12.0, enabled=False)
-        triggers = evaluate_alerts(store, {"600595": 12.5, "000001": 12.5})
+        store.add_alert("000001", "price_below", 5.0)
+        # 只提供 600595 的报价
+        triggers = evaluate_alerts(store, {"600595": 13.0})
         assert len(triggers) == 1
         assert triggers[0].ticker == "600595"
 
+    def test_record_trigger_called_on_trigger(self, store):
+        """成功触发的规则会被 store.record_trigger 写回 last_triggered_at/price/count."""
+        rule = store.add_alert("600595", "price_above", 12.0)
+        assert rule.trigger_count == 0
+        assert rule.last_triggered_at is None
 
-# ── message formatting ──────────────────────────────────────────────
+        evaluate_alerts(store, {"600595": 13.0}, now=1_000_000.0)
+
+        refreshed = store.list_alerts(ticker="600595")[0]
+        assert refreshed.trigger_count == 1
+        assert refreshed.last_triggered_at == 1_000_000.0
+        assert refreshed.last_triggered_price == 13.0
+
+    def test_not_implemented_type_silently_skipped_in_batch(self, store):
+        """pct_change 在批量评估中静默跳过，不影响其它规则。"""
+        store.add_alert("600595", "pct_change", 3.0)
+        store.add_alert("000001", "price_above", 5.0)
+        triggers = evaluate_alerts(
+            store, {"600595": 10.0, "000001": 6.0},
+        )
+        # pct_change 跳过，price_above 触发
+        assert len(triggers) == 1
+        assert triggers[0].ticker == "000001"
+
+
+# ── 消息格式化 format_trigger_message ──────────────────────────────
 
 
 class TestFormatTriggerMessage:
+    """format_trigger_message 直接透传 trigger.message。"""
 
-    def test_explicit_message_passed_through(self):
-        t = AlertTrigger(
-            rule_id="r1", ticker="600595", rule_type="price_above",
-            threshold=12.0, current_value=12.5,
-            triggered_at=time.time(), message="custom msg",
+    def test_returns_trigger_message_unchanged(self):
+        """直接返回构造时的 message，不二次格式化。"""
+        trigger = AlertTrigger(
+            rule_id="r1",
+            ticker="600595",
+            rule_type="price_above",
+            threshold=12.0,
+            current_value=12.5,
+            triggered_at=time.time(),
+            message="价格突破 12.00，当前 12.50 (+4.17%)",
         )
-        assert format_trigger_message(t) == "custom msg"
+        assert format_trigger_message(trigger) == "价格突破 12.00，当前 12.50 (+4.17%)"
 
-    def test_fallback_format_when_no_message(self):
-        t = AlertTrigger(
-            rule_id="r1", ticker="600595", rule_type="price_above",
-            threshold=12.0, current_value=12.5, triggered_at=time.time(),
-        )
-        out = format_trigger_message(t)
-        assert "600595" in out
-        assert "12.50" in out
-
-
-# ── integration with store ──────────────────────────────────────────
-
-
-class TestEvaluateAlertsIntegration:
-
-    def test_returns_trigger_per_fired_rule(self, store):
-        store.add_alert("600595", "price_above", 12.0)
-        store.add_alert("000001", "price_below", 5.0)
-        store.add_alert("300750", "price_above", 100.0, enabled=False)  # disabled
-        triggers = evaluate_alerts(
-            store,
-            {"600595": 13.0, "000001": 4.5, "300750": 200.0},
-        )
-        tickers = sorted(t.rule_id for t in triggers)  # sort for stability
-        assert len(triggers) == 2
-        # Each fired trigger has a unique rule_id and a positive message.
-        for t in triggers:
-            assert t.rule_id
-            assert t.message
-            assert t.triggered_at > 0
-
-    def test_mixed_triggers_recorded_once(self, store):
-        store.add_alert("600595", "price_above", 12.0)
-        before = store.list_alerts(ticker="600595")[0].trigger_count
-        evaluate_alerts(store, {"600595": 13.0})
-        after = store.list_alerts(ticker="600595")[0].trigger_count
-        assert after == before + 1
-
-
-# ── Spec 3.3.4: pnl_pct signed thresholds ───────────────────────────
-
-
-class TestPnlPctLoss:
-
-    def test_negative_threshold_triggers_on_loss(self, store):
-        """threshold -10% fires when pnl <= -10% (signed comparison)."""
-        store.add_alert("600595", "pnl_pct", -10.0)
-        # current 8, cost 10 → -20% pnl, which is >= -10? No: -20 >= -10 is False.
-        # pnl_pct rule fires when pct >= threshold, so a -5% loss with -10
-        # threshold fires (-5 >= -10), but -20 does not... verify -5 fires.
-        triggers = evaluate_alerts(store, {"600595": 9.5}, cost_bases={"600595": 10.0})
-        assert len(triggers) == 1
-
-    def test_deep_loss_below_negative_threshold_does_not_fire(self, store):
-        store.add_alert("600595", "pnl_pct", -10.0)
-        # -20% pnl; -20 >= -10 is False → no fire.
-        triggers = evaluate_alerts(store, {"600595": 8.0}, cost_bases={"600595": 10.0})
-        assert triggers == []
-
-    def test_missing_cost_basis_yields_zero_pnl(self, store):
-        """No cost_basis → pnl_pct computed as 0 → only fires if threshold <= 0."""
-        store.add_alert("600595", "pnl_pct", 5.0)
-        triggers = evaluate_alerts(store, {"600595": 20.0})
-        assert triggers == []
-
-
-# ── Spec 3.3: take_profit / stop_loss without cost_basis ────────────
-
-
-class TestProfitLossNoCostBasis:
-
-    def test_take_profit_needs_cost_basis(self, store):
-        store.add_alert("600595", "take_profit", 10.0)
-        # No cost_bases dict → cannot compute target → no fire.
-        assert evaluate_alerts(store, {"600595": 100.0}) == []
-
-    def test_stop_loss_needs_cost_basis(self, store):
-        store.add_alert("600595", "stop_loss", 5.0)
-        assert evaluate_alerts(store, {"600595": 0.01}) == []
-
-    def test_trailing_stop_needs_cost_basis(self, store):
-        store.add_alert("600595", "trailing_stop", 5.0)
-        assert evaluate_alerts(store, {"600595": 0.01}) == []
-
-    def test_stop_loss_not_triggered_above_target(self, store):
-        store.add_alert("600595", "stop_loss", 5.0)
-        # target = 10 * 0.95 = 9.5; current 9.6 > 9.5 → no fire.
-        assert evaluate_alerts(store, {"600595": 9.6}, cost_bases={"600595": 10.0}) == []
-
-    def test_take_profit_not_triggered_below_target(self, store):
-        store.add_alert("600595", "take_profit", 10.0)
-        # target = 10 * 1.10 = 11.0; current 10.9 < 11 → no fire.
-        assert evaluate_alerts(store, {"600595": 10.9}, cost_bases={"600595": 10.0}) == []
-
-
-# ── Spec 3.3: message content per rule_type ─────────────────────────
-
-
-class TestTriggerMessages:
-
-    def test_price_above_message(self, store):
-        store.add_alert("600595", "price_above", 12.0)
-        t = evaluate_alerts(store, {"600595": 12.5})[0]
-        assert "突破" in t.message and "12.50" in t.message
-
-    def test_price_below_message(self, store):
-        store.add_alert("600595", "price_below", 10.0)
-        t = evaluate_alerts(store, {"600595": 9.5})[0]
-        assert "跌破" in t.message
-
-    def test_pct_change_message(self, store):
-        store.add_alert("600595", "pct_change", 3.0)
-        t = evaluate_alerts(store, {"600595": 11.0}, prev_closes={"600595": 10.0})[0]
-        assert "涨跌幅" in t.message
-
-    def test_take_profit_message(self, store):
-        store.add_alert("600595", "take_profit", 10.0)
-        t = evaluate_alerts(store, {"600595": 11.0}, cost_bases={"600595": 10.0})[0]
-        assert "止盈" in t.message
-
-    def test_stop_loss_message(self, store):
-        store.add_alert("600595", "stop_loss", 5.0)
-        t = evaluate_alerts(store, {"600595": 9.0}, cost_bases={"600595": 10.0})[0]
-        assert "止损" in t.message
-
-
-# ── record_trigger resilience ────────────────────────────────────────
-
-
-class TestRecordTriggerResilience:
-
-    def test_vanished_rule_between_list_and_record_is_swallowed(self, store, monkeypatch):
-        """If record_trigger raises KeyError (rule deleted mid-eval), skip silently."""
-        store.add_alert("600595", "price_above", 12.0)
-
-        def boom(rule_id, price, now=None):
-            raise KeyError(rule_id)
-
-        monkeypatch.setattr(store, "record_trigger", boom)
-        # Should still return the trigger, not raise.
-        triggers = evaluate_alerts(store, {"600595": 13.0})
-        assert len(triggers) == 1
+    def test_constant_anti_repeat_window_is_300(self):
+        """ANTI_REPEAT_WINDOW_SEC = 300。"""
+        assert ANTI_REPEAT_WINDOW_SEC == 300
