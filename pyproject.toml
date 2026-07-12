@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "youfu-trading-agent-astock"
-version = "0.4.0"
+version = "0.6.0"
 description = "A股多Agent投研框架 — 基于 TradingAgents 深度特化, fork 自 simonlin1212/tradingagents-astock"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,6 +38,8 @@ dependencies = [
     "python-dotenv>=1.1.0",
     "mootdx>=0.10.0",
     "scipy>=1.10.0",
+    "croniter>=2.0.0",
+    "jinja2>=3.1.0",
 ]
 
 [project.urls]

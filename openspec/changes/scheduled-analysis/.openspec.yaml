@@ -1,0 +1,21 @@
+.openspec: v0.6.0
+name: scheduled-analysis
+title: 定时分析模块 (Scheduled Analysis)
+created: 2026-07-10
+status: proposed
+prerequisites:
+  - v0.5.0 (portfolios + job_queue 已落地)
+impact:
+  - new module: backend/core/scheduler.py
+  - new module: backend/core/watchlist.py
+  - new module: backend/core/notifier.py
+  - new module: cli/schedule.py
+  - new module: web/components/schedule_panel.py
+  - new module: web/components/schedule_dialogs.py
+  - modify: web/app.py (+ NAV_ITEMS + dispatch)
+  - modify: web/components/sidebar.py
+  - modify: web/styles/elements.css
+  - new dep: streamlit-autorefresh>=1.0.1
+  - new dep: croniter>=3.0.0
+  - new dep: jinja2>=3.1.0 (template)
+  - new test files: 4 (scheduler, watchlist, notifier, schedule_panel)
