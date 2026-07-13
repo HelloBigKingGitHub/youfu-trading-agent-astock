@@ -54,7 +54,7 @@ def _read_pyproject_version() -> str:
 
 # Deployed build intentionally lags the project version metadata — see
 # CHANGELOG.md. Update this constant when shipping a new release.
-_DEPLOYED_BUILD = "v0.2.13"
+_DEPLOYED_BUILD = "v0.6.0"
 _PROJECT_VERSION = _read_pyproject_version()
 _BUILD_DATE = date.today().isoformat()
 
