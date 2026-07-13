@@ -281,6 +281,7 @@ _NAV_ITEMS: list[tuple[str, str, str]] = [
     ("📋", "历史", "history"),
     ("📋", "日志", "logs"),
     ("📈", "走势图", "chart"),
+    ("⏰", "定时分析", "schedule"),
     ("⚙️", "设置", "settings"),
 ]
 
@@ -443,6 +444,11 @@ elif view == "portfolio":
     from web.components.portfolio_panel import render_portfolio_panel
 
     render_portfolio_panel()
+
+elif view == "schedule":
+    from web.components.schedule_panel import render_schedule_panel
+
+    render_schedule_panel()
 
 elif view == "settings":
     render_settings_panel()
