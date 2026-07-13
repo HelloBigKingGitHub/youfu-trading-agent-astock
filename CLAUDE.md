@@ -6,7 +6,7 @@
 - **仓库**: https://github.com/HelloBigKingGitHub/youfu-trading-agent-astock
 - **协议**: Apache 2.0
 - **Python**: >=3.10
-- **当前版本**: 0.5.0
+- **当前版本**: 0.6.0
 
 ## 架构
 
@@ -24,8 +24,8 @@
 | 百度股市通 | HTTP (gushitong.baidu) | 概念板块归属（资金流已迁移至东财push2） |
 | 东方财富 np-ipick | HTTP | 选股热度排名（板块轮动日报用） |
 
-### Agent 角色（7 个 + 板块轮动日报 + 个人仓位模块）
-原版 4 个（市场/情绪/新闻/基本面）+ A 股特化 3 个（政策分析师/游资追踪/解禁监控）+ **v0.2.12 新增「板块轮动日报」**（侧边栏按钮直接调用 `get_sector_rotation_digest`，不走 LangGraph 也不消耗 LLM token）：东财 np-ipick 选股热度 + 同花顺涨停归因 + 百度 PAE 概念反查 → 4 段式 Markdown。**v0.5.0 新增「个人仓位跟踪」**（侧边栏第 8 按钮）：手工录入持仓 + 交易流水，与 Bull/Bear 信号联动，按行业/板块/资产类别归因，配套 XIRR / Sharpe / 最大回撤 / Brinson 业绩归因。
+### Agent 角色（7 个 + 板块轮动日报 + 个人仓位 + 定时分析）
+原版 4 个（市场/情绪/新闻/基本面）+ A 股特化 3 个（政策分析师/游资追踪/解禁监控）+ **v0.2.12 新增「板块轮动日报」**（侧边栏按钮直接调用 `get_sector_rotation_digest`，不走 LangGraph 也不消耗 LLM token）：东财 np-ipick 选股热度 + 同花顺涨停归因 + 百度 PAE 概念反查 → 4 段式 Markdown。**v0.5.0 新增「个人仓位跟踪」**（侧边栏第 8 按钮）：手工录入持仓 + 交易流水，与 Bull/Bear 信号联动，按行业/板块/资产类别归因，配套 XIRR / Sharpe / 最大回撤 / Brinson 业绩归因。**v0.6.0 新增「定时分析」**（侧边栏第 9 按钮 `⏰ 定时分析`）：cron + ticker 源（持仓/自选股/手动）+ 4 渠道通知（WeCom/Email/Desktop/Log），跟现有 batch_job_queue + portfolio_store 复用，预置 2 schedule（每日持仓复盘 / 周一前瞻）。整个 sidebar 第 9 按钮 = 配置 UI，不是 dialog。
 
 ### 关键路径
 - `tradingagents/dataflows/a_stock.py` — A 股数据 vendor，所有数据获取入口
@@ -36,6 +36,7 @@
 - `backend/core/portfolio_store.py` — v0.5.0 个人仓位持久化（positions/transactions/alerts JSON + audit.log，单例 + RLock）
 - `backend/core/portfolio_calc.py` — v0.5.0 仓位指标计算（XIRR / Sharpe / MaxDD / Brinson / 板块归因）
 - `web/components/portfolio_panel.py` — v0.5.0 仓位面板入口（6 tabs + Bull/Bear 联动 banner）
+- `backend/core/scheduler.py` — v0.6.0 定时分析调度引擎（Schedule + ScheduleRun + 单例 + 60s polling + 持久化）
 - `cli/` — CLI 入口
 
 ### 中文股票名解析链路
@@ -171,6 +172,71 @@ web/components/portfolio_panel (6 tabs: 总览/流水/配置/预警/导入导出
 - 96% 覆盖率（portfolio_store 98%、portfolio_calc 95%、portfolio_alerts 97%、portfolio_import 96%）
 - 610 全量测试通过（pre-existing chart_panel 环境失败未计入）
 - 所有测试用 `monkeypatch.setattr("backend.core.portfolio_store.PORTFOLIO_DIR", tmp_path)` 隔离真实 `~/.tradingagents/portfolio/`
+
+## 定时分析模块 (v0.6.0)
+
+Cron 定时分析任务 + ticker 源 + 多渠道通知。一页 sidebar 第 9 按钮 ⏰ = 配置 UI。
+
+### 数据流
+```
+用户配置 schedule (cron + source + notify)
+    ↓
+backend/core/scheduler (单例 + RLock + JSON + 60s polling)
+    ↓ 时间到 (croniter 匹配)
+_load_tickers_for_source (portfolio → PortfolioStore / watchlist → WatchlistStore / manual → 配置)
+    ↓
+JobQueue.create_batch + submit (复用 v0.5.0)
+    ↓
+跑完 → Notifier.send → 4 channel (WeCom/Email/Desktop/Log)
+    ↓
+写 runs/YYYY-MM-DD.jsonl 审计
+```
+
+### 后端模块
+- **`backend/core/scheduler.py`**（717 行）— Schedule / ScheduleRun dataclass + 单例 + 60s polling + tick + 持久化
+- **`backend/core/watchlist.py`**（204 行）— 自选股（自选 + 标签分类）
+- **`backend/core/notifier.py`**（385 行）— 4 channel 通知器 + Jinja2 模板 + 失败 fallback
+
+### UI 入口
+侧边栏 9 按钮（第 8 个）：`⏰ 定时分析` → 切到 `render_schedule_panel()`。布局 4 段：
+1. 调度列表（5 数据列 + 操作：⏸▶🗑）
+2. 新增 / 编辑 dialog（5 cron helper + 实时校验 + 下次执行预览）
+3. 运行历史（最近 20 条 audit log）
+4. 全局状态（调度器运行中 / last tick / 下次执行 / 启停按钮）
+
+10s auto-refresh（time.sleep + st.rerun，避免 streamlit-autorefresh dep）。
+
+CLI：`python -m cli.schedule list/add/pause/resume/run-now/delete/runs`
+
+### 关键文件
+
+| 文件 | 行数 | 作用 |
+|---|---|---|
+| `backend/core/scheduler.py` | 717 | Schedule + ScheduleRun + 单例 + 60s polling + tick |
+| `backend/core/watchlist.py` | 204 | 自选股 (VALID_TAGS = 长线/短线/观察/T0/T1/T2) |
+| `backend/core/notifier.py` | 385 | 4 channel + Jinja2 + fallback |
+| `cli/schedule.py` | 252 | Typer CLI |
+| `web/components/schedule_panel.py` | 310 | 主页面 4 段布局 |
+| `web/components/schedule_dialogs.py` | 340 | 新增/编辑 dialog (cron helper + 校验) |
+| `tests/test_scheduler.py` | 460 | 39 tests |
+| `tests/test_watchlist.py` | 220 | 23 tests |
+| `tests/test_notifier.py` | 380 | 26 tests |
+| `tests/test_cli_schedule.py` | 200 | 14 tests |
+| `tests/test_schedule_panel.py` | 656 | 32 tests |
+| `web/styles/elements.css` | +96 行 | 7 个 `.bb-schedule-*` 类 |
+| **总计** | **~4200** | — |
+
+### 测试
+
+- 134 个 v0.6.0 新增测试 全过
+- 743 总测试（609 v0.5.0 baseline + 134 v0.6.0），零回归
+- 覆盖率：notifier 90% / watchlist 90% / scheduler 65%（_run_schedule 600s wait 太长未测，client live smoke test 验证）
+
+### 用户核心需求 ✓
+
+> "定时任务要有配置页面, 可随时配置相关信息"
+
+整页 ⏰ 定时分析 = 配置 + 状态 + 历史 + 全局控制一体化，非一次性 dialog。详见 CHANGELOG.md v0.6.0 段。
 
 ## 已知问题与注意事项
 

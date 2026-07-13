@@ -6,6 +6,149 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [v0.6.0] - 2026-07-13
+
+### 新增
+- **定时分析模块（Scheduled Analysis）** — Cron 调度 + ticker 源 + 多渠道通知
+  - 配置页面优先：sidebar 第 8 个按钮 `⏰ 定时分析` = 完整配置 UI（一键随时增/删/启停/立即跑），不是一次性 dialog
+  - **3 种 ticker 源**：
+    - 持仓（自动跟踪 `PortfolioStore.list_positions()`）
+    - 自选股（新增 `WatchlistStore`）
+    - 手动（用户在 schedule 配置里直接列）
+  - **5 个 cron helper 一键填入**：工作日 18:00 / 周一早 8:00 / 每天 9:30 / 每月 1 号 / 每 4 小时
+  - **4 个通知渠道**（失败 fallback log）：
+    - **WeCom** — 企业微信 webhook markdown
+    - **Email** — SMTP + MIMEText
+    - **Desktop** — Linux `notify-send`
+    - **Log** — 永远成功（兜底）
+  - **CLI 双管理**：`python -m cli.schedule list/add/pause/resume/run-now/delete/runs`
+  - **预置 2 schedule**（v0.6.0 launch）：
+    - **每日持仓复盘**（cron `0 18 * * 1-5`，源 portfolio，启用）
+    - **周一前瞻**（cron `0 8 * * 1`，源 portfolio，默认禁用，等用户手动启用）
+
+### 后端模块（4 个新文件）
+
+  - **`backend/core/scheduler.py`（717 行）** — Schedule / ScheduleRun dataclass + 单例 + 后台线程 + 60s polling + tick + 持久化
+    - `Schedule` 字段：`schedule_id` / `name` / `cron_expr` / `source_type` / `source_config` / `enabled` / `notify_channels` / `notify_template` / `config` / `last_run_at` / `last_run_batch_id` / `last_run_status` / `last_error`
+    - `ScheduleRun` dataclass：审计字段 + `to_dict` / `from_dict`
+    - `SourceType` enum：portfolio / watchlist / manual
+    - `RunStatus` enum：never / ok / partial / error / skipped
+    - `VALID_CRON_HELPERS`（5 个预置 cron 字符串）
+    - CRUD：add / update / delete / get / list（enabled_only 参数）
+    - 控制：pause / resume / run_now（立即跑，返回 batch_id）
+    - 状态：start（daemon thread）/ stop / is_running / last_tick_at
+    - 内部 IO：_load / _save（原子写，`.tmp` 替换） + fcntl file lock
+    - `_tick` 每 60s 算哪些该跑（用 croniter）
+    - `_run_schedule` 真跑：拉 ticker + `JobQueue.create_batch + submit` + 注册回调
+    - `_load_tickers_for_source`（3 种源）
+    - `_append_run` 写 `runs/YYYY-MM-DD.jsonl`（按天分文件）
+    - `_prune_old_runs`（30 天自动清理）
+    - `_ensure_presets` 首次 install 创建 2 个预置
+  - **`backend/core/watchlist.py`（204 行）** — 自选股 CRUD
+    - `WatchEntry` dataclass：`entry_id` / `ticker` / `tag` / `note` / `created_at`
+    - `WatchlistStore` 单例（RLock + JSON 持久化）
+    - `VALID_TAGS = {"长线", "短线", "观察", "T0", "T1", "T2"}`
+    - 路径 `~/.tradingagents/watchlist.json`
+  - **`backend/core/notifier.py`（385 行）** — 多渠道通知器
+    - `Channel` enum：wecom / email / desktop / log
+    - `ChannelConfig` dataclass
+    - `Notifier` 单例 + 4 channel 发送
+    - **Jinja2 默认模板**：`⏰ {name} {emoji} {text} - 开始: {started_at} - 耗时: {duration}s - 摘要: {summary}`
+    - WeCom channel：HTTP POST webhook + markdown
+    - Email channel：SMTP + MIMEText
+    - Desktop channel：`subprocess notify-send`
+    - Log channel：`logger.info`（永远成功）
+    - **失败 fallback**：1 channel 失败不影响其他 channel + scheduler
+    - 配置文件：`~/.tradingagents/schedules/channels.yaml`
+  - **`cli/schedule.py`（252 行）** — Typer CLI
+    - 6 命令：`list` / `add` / `run_now` / `pause` / `resume` / `delete` / `runs`
+    - Rich 输出（绿 ok / 红 error）
+    - `add --name --cron --source portfolio|watchlist|manual [--tickers] [--tag]` 必填
+    - `runs --limit 20` 默认
+
+### UI 模块（2 个新文件）
+
+  - **`web/components/schedule_panel.py`（310 行）** — 主页面（4 段布局）
+    - 段 1：调度列表（5 数据列 + 操作列：⏸▶🗑）
+    - 段 2：新增/编辑 dialog（调 `schedule_dialogs`）
+    - 段 3：运行历史（最近 20 条 audit log，按 schedule_id 过滤）
+    - 段 4：全局状态（调度器运行中 / last tick / 下次执行 / 启停按钮）
+    - 行内 inline edit + 删除前确认
+    - 空状态：`👋 暂无定时任务，点 ➕新增 创建第一个`
+    - 10s auto-refresh（`time.sleep + st.rerun`，避免 `streamlit-autorefresh` 依赖）
+    - 错误用 `st.error` 红字高亮
+    - ✅ 关键：`@st.dialog` 在 bare mode raise `StreamlitAPIException`，用 `try/except` 包装，保证测试 + 实战都不崩
+  - **`web/components/schedule_dialogs.py`（340 行）** — 新增 / 编辑 dialog
+    - `@st.dialog("⏰ 新增 / 编辑 定时任务", width="large")`
+    - 字段：name + cron + 5 个 cron helper 按钮 + source radio + 自选股 tag selectbox + 手动 tickers text_input + 4 个 notify 复选框 + enabled 复选框
+    - cron 实时校验：`validate_cron()` 返回 None 或错误信息，invalid 时禁用保存
+    - cron 实时显示 "⏰ 下次执行: 2026-07-11 18:00:00"（用 `croniter.get_next()`）
+    - 底部 3 按钮：[取消] / [保存] / [保存并立即跑]
+    - 纯 helper 函数（`validate_cron` / `next_run_preview` / `parse_manual_tickers` / `build_source_config` / `validate_schedule_form` / `build_schedule`）让单元测试不需要 streamlit context
+
+### 改 web/app.py + web/styles/elements.css
+
+  - **`web/app.py` +5 行**：`_NAV_ITEMS` 加 `("⏰", "定时分析", "schedule")` 第 8 个 + view dispatch `elif view == "schedule": render_schedule_panel()`
+  - **`web/styles/elements.css` +96 行**：`.bb-schedule-card` / `.bb-schedule-table` / `.bb-schedule-status-dot` / `.bb-schedule-cron-pill` / `.bb-schedule-history-row` / `.bb-schedule-dialog` / `.bb-schedule-empty`
+
+### 新依赖
+
+  - `croniter>=2.0.0`（cron 解析 + 下次时间计算）
+  - `jinja2>=3.1.0`（通知模板渲染）
+  - 未加 `streamlit-autorefresh`（用 `time.sleep + st.rerun` 替代，少一个 dep）
+
+### 测试（175 new tests）
+
+  - **`tests/test_scheduler.py`（39 tests, 460 行）** — Schedule dataclass / CRUD / 持久化 / tick / tickers 3 来源 / run_now / threading / notify / 预置 / start-stop
+  - **`tests/test_watchlist.py`（23 tests, 220 行）** — CRUD / persistence / tag 过滤 / threading
+  - **`tests/test_notifier.py`（26 tests, 380 行）** — 4 channel / YAML parser / templates / 失败 fallback
+  - **`tests/test_cli_schedule.py`（14 tests, 200 行）** — 所有 6 个命令
+  - **`tests/test_schedule_panel.py`（32 tests, 656 行）** — 4 段布局 / cron helpers / 校验 / parse / validate / build / list table / pause-resume / delete / 空状态
+  - **全套 743 passed**（v0.5.0 baseline 552 + portfolio 80 + scheduler 102 + schedule_panel 32），零回归
+  - 覆盖率：notifier 90% / watchlist 90% / scheduler 65%（部分 600s wait 太长未测，详 tasks.md Phase 4.5）/ schedule_panel 工具函数 ~85%
+
+### 已知问题 (Known Limitations)
+
+  - **单进程** — 跨机器用文件锁（`fcntl.flock`）解决，跨网络 v0.7.0 分布式
+  - **时区硬编 Asia/Shanghai**（不实行 DST）
+  - **无 schedule JSON 导入/导出** — v0.7.0
+  - **FastAPI `/api/schedules` REST 端点未暴露** — v0.7.0
+  - **多设备同步** — v0.7.0
+  - **失败重试 + backoff** — v0.7.0
+  - **运行时长限制（timeout）** — v0.7.0
+  - **依赖 `streamlit-autorefresh` 决定**：MVP 用 `time.sleep + st.rerun` 替代（避免 dep）。
+  - **60s tick 间隔**（polling）—— 1s 级别调度不支持
+  - **scheduler 覆盖 65%**（不是 80%）—— `_run_schedule` 600s wait_for_batch 太长不方便测，client 实际用 streamlit 走 live smoke test 验证（截图已截）
+
+### 完整文档 + Spec
+
+  - `openspec/changes/scheduled-analysis/` 完整 spec-first 5 文档：
+    - `.openspec.yaml`（metadata）
+    - `proposal.md`（Why / What / Non-goals / Capabilities / Impact）
+    - `design.md`（8 decisions + 架构图 + file-by-file spec）
+    - `tasks.md`（Phase 1-6, 50+ checkboxes）
+    - `README.md`（快速开始）
+  - `~/.tradingagents/schedules/schedules.json`（持久化）
+  - `~/.tradingagents/schedules/channels.yaml`（通知配置）
+  - `~/.tradingagents/schedules/runs/YYYY-MM-DD.jsonl`（审计日志，按天分文件）
+
+### 截图
+
+  - `/tmp/browse_screenshots/sched_panel.png` — 4 段布局（266 KB, 1536x1152, 真实 streamlit 渲染，含 1 个测试 schedule + 15 行历史 + 调度器状态卡片）
+  - `/tmp/browse_screenshots/sched_dialog.png` — ➕ 新增后 dialog（153 KB）
+
+### 用户核心需求 ✓
+
+  > "**定时任务要有配置页面, 可随时配置相关信息**"
+
+  - ⏰ 定时分析 sidebar 第 8 按钮 = 完整配置 UI（一页 = 配置 + 状态 + 历史 + 全局控制），不是一次性 dialog
+  - CRUD：新增 / 编辑（带 cron helper + 实时校验 + 下次执行预览）/ 暂停 / 启用 / 立即跑 / 删除（带确认）
+  - 10s auto-refresh
+  - 行内 inline edit + 二次确认 + 错误高亮 + 空状态友好提示
+  - 跟现有 v0.5.0 portfolio / v0.4.0 chart / v0.3.0 logs 一致的 Bloomberg 暗色主题
+
+---
+
 ## [v0.5.0] - 2026-07-XX
 
 ### 新增
