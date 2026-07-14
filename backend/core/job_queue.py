@@ -159,6 +159,7 @@ class JobQueue:
         self._batches: dict[str, BatchJob] = {}
         self._jobs: dict[str, Job] = {}
         self._store_lock = threading.Lock()
+        self._submit_lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = None
         self._max_workers: int = int(os.environ.get("BATCH_MAX_WORKERS", "5"))
         self._stagger_seconds: float = float(os.environ.get("BATCH_STAGGER", "1.5"))
@@ -406,8 +407,14 @@ class JobQueue:
         executor.submit(self._run_one, "", job.job_id, config or {})
         return True
 
-    def wait_for_batch(self, batch_id: str, timeout: float = 300.0) -> bool:
-        """阻塞直到 batch 内所有 job 都到终态,或超时。返回是否完整完成。"""
+    def wait_for_batch(self, batch_id: str, timeout: float = 1800.0) -> bool:
+        """阻塞直到 batch 内所有 job 都到终态,或超时。返回是否完整完成。
+
+        默认 timeout = 1800s (30 分钟)。单 ticker 多 Bull/Bear/Aggregator
+        分析在 deep_thought + quick_thought + 7 Analyst 阶段实测耗时约 20 分钟
+        (v0.6.0 deep_mode + 中文 7 analyst)。历史 300s/600s 不足以容纳一次
+        完整分析，1800s 留出约 10 分钟余量。
+        """
         deadline = time.time() + timeout
         batch = self.get_batch(batch_id)
         if not batch:

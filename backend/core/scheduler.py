@@ -463,8 +463,20 @@ class Scheduler:
         sched: Schedule,
         manual: bool = False,
     ) -> None:
-        """真正执行一个 schedule。同步（线程内阻塞）。"""
+        """真正执行一个 schedule。同步（线程内阻塞）。
+
+        v0.6.0 scheduler fixes (2026-07-14):
+          * create_batch 后调用 submit，避免 job 永远 pending；
+          * configs 复用 batch API / CLI 的 build_default_configs 派生路径；
+          * 支持每个 schedule 覆盖 stagger_seconds；
+          * 支持 wait_timeout_seconds，默认 1800s。
+        """
         import datetime as _dt
+        sched_config = sched.config or {}
+        wait_timeout = float(
+            sched_config.get("wait_timeout_seconds", 1800.0)
+        )
+        stagger_override = sched_config.get("stagger_seconds")
         run_id = _new_id()
         started_at = time.time()
         run = ScheduleRun(
@@ -494,11 +506,49 @@ class Scheduler:
             self._append_run(run)
 
             q = JobQueue.get_instance()
-            batch_id, batch = q.create_batch(requests)
-            run.batch_id = batch_id
-            run.job_ids = [j.job_id for j in batch.jobs]
+            # JobQueue is shared by API/CLI/schedules. Serialize only submit-time
+            # stagger overrides so concurrent callers cannot observe or restore
+            # another schedule's value mid-submit.
+            with q._submit_lock:
+                original_stagger = q._stagger_seconds
+                if stagger_override is not None:
+                    q._stagger_seconds = max(0.0, float(stagger_override))
 
-            q.wait_for_batch(batch_id, timeout=600.0)
+                try:
+                    batch_id, batch = q.create_batch(requests)
+                    run.batch_id = batch_id
+                    run.job_ids = [j.job_id for j in batch.jobs]
+
+                    # Keep scheduler config resolution identical to batch API / CLI.
+                    from backend.api.batch_helpers import build_default_configs
+
+                    llm_override = {
+                        key: value
+                        for key, value in {
+                            "llm_provider": sched_config.get("provider"),
+                            "deep_think_llm": sched_config.get("deep_model"),
+                            "quick_think_llm": sched_config.get("quick_model"),
+                            "backend_url": sched_config.get("backend_url"),
+                        }.items()
+                        if value is not None
+                    }
+                    item_overrides = [dict(llm_override) for _ in tickers]
+                    configs = build_default_configs(
+                        batch.jobs,
+                        item_overrides=item_overrides,
+                    )
+                    language = sched_config.get("language")
+                    if language is not None:
+                        for config in configs:
+                            config["output_language"] = language
+
+                    # submit applies JobQueue's stagger between adjacent jobs.
+                    q.submit(batch_id, batch.jobs, configs=configs)
+                finally:
+                    # A schedule-specific override must never leak into later runs.
+                    q._stagger_seconds = original_stagger
+
+            q.wait_for_batch(batch_id, timeout=wait_timeout)
             batch = q.get_batch(batch_id)
             if batch is None:
                 raise RuntimeError(f"batch {batch_id} disappeared")
@@ -540,6 +590,10 @@ class Scheduler:
     ) -> None:
         """run_now 的延后路径：batch 已创建（run_now 内），这里只完成 + 通知。"""
         import datetime as _dt
+        sched_config = sched.config or {}
+        wait_timeout = float(
+            sched_config.get("wait_timeout_seconds", 1800.0)
+        )
         run_id = _new_id()
         started_at = time.time()
         run = ScheduleRun(
@@ -556,7 +610,7 @@ class Scheduler:
             trade_date = _dt.date.today().strftime("%Y-%m-%d")
             self._append_run(run)
 
-            q.wait_for_batch(bid, timeout=600.0)
+            q.wait_for_batch(bid, timeout=wait_timeout)
             batch_now = q.get_batch(bid)
             if batch_now is None:
                 raise RuntimeError(f"batch {bid} disappeared")

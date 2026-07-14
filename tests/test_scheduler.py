@@ -461,3 +461,134 @@ class TestSchedulerNotifyChannels:
         assert call_args.args[0] == ["log"]
         assert call_args.args[1] == sample_schedule.name
         assert isinstance(call_args.args[2], dict)
+
+
+# ── v0.6.0 scheduler regression fixes ──────────────────────────────────
+
+
+class TestSchedulerFixes:
+    """Regression coverage for scheduler submit/config/stagger/timeout bugs."""
+
+    @staticmethod
+    def _prepare(s, sample_schedule, mock_q):
+        """Use one manual ticker and a completed in-memory batch."""
+        sample_schedule.source_type = SourceType.MANUAL
+        sample_schedule.source_config = {"tickers": ["600595"]}
+        s.add_schedule(sample_schedule)
+        job = MagicMock(job_id="j-1", status="completed")
+        batch = MagicMock(batch_id="b-1", jobs=[job])
+        mock_q._submit_lock = threading.Lock()
+        mock_q._stagger_seconds = 1.5
+        mock_q.create_batch.return_value = ("b-1", batch)
+        mock_q.get_batch.return_value = batch
+        return batch
+
+    def test_run_schedule_calls_q_submit(self, tmp_schedules, sample_schedule):
+        """回归 B1: create_batch 后必须 submit，再等待 batch。"""
+        with patch("backend.core.scheduler.JobQueue") as MockJQ:
+            mock_q = MockJQ.get_instance.return_value
+            s = Scheduler.get_instance()
+            self._prepare(s, sample_schedule, mock_q)
+
+            s._run_schedule(sample_schedule)
+
+        mock_q.submit.assert_called_once()
+        mock_q.wait_for_batch.assert_called_once()
+        submit_index = next(i for i, c in enumerate(mock_q.method_calls) if c[0] == "submit")
+        wait_index = next(i for i, c in enumerate(mock_q.method_calls) if c[0] == "wait_for_batch")
+        assert submit_index < wait_index
+
+    def test_run_schedule_passes_configs(self, tmp_schedules, sample_schedule):
+        """回归 B2/B5: schedule override 经 build_default_configs 传给 submit。"""
+        sample_schedule.config = {
+            "provider": "deepseek",
+            "deep_model": "deepseek-chat",
+            "quick_model": "deepseek-reasoner",
+            "backend_url": "https://example.invalid/v1",
+            "language": "English",
+        }
+        with patch("backend.core.scheduler.JobQueue") as MockJQ:
+            mock_q = MockJQ.get_instance.return_value
+            s = Scheduler.get_instance()
+            batch = self._prepare(s, sample_schedule, mock_q)
+
+            s._run_schedule(sample_schedule)
+
+        configs = mock_q.submit.call_args.kwargs["configs"]
+        assert len(configs) == len(batch.jobs) == 1
+        assert configs[0]["llm_provider"] == "deepseek"
+        assert configs[0]["deep_think_llm"] == "deepseek-chat"
+        assert configs[0]["quick_think_llm"] == "deepseek-reasoner"
+        assert configs[0]["backend_url"] == "https://example.invalid/v1"
+        assert configs[0]["output_language"] == "English"
+
+    def test_run_schedule_stagger_override(self, tmp_schedules, sample_schedule):
+        """回归 B3: submit 时应用 stagger override，结束后恢复原值。"""
+        sample_schedule.config = {"stagger_seconds": 0.5}
+        with patch("backend.core.scheduler.JobQueue") as MockJQ:
+            mock_q = MockJQ.get_instance.return_value
+            s = Scheduler.get_instance()
+            self._prepare(s, sample_schedule, mock_q)
+            observed = []
+            mock_q.submit.side_effect = lambda *_a, **_kw: observed.append(
+                mock_q._stagger_seconds
+            )
+
+            s._run_schedule(sample_schedule)
+
+        assert observed == [0.5]
+        assert mock_q._stagger_seconds == 1.5
+
+    def test_run_schedule_stagger_default_no_change(
+        self, tmp_schedules, sample_schedule
+    ):
+        """未配置 stagger_seconds 时 submit 使用并保留 JobQueue 默认值。"""
+        with patch("backend.core.scheduler.JobQueue") as MockJQ:
+            mock_q = MockJQ.get_instance.return_value
+            s = Scheduler.get_instance()
+            self._prepare(s, sample_schedule, mock_q)
+            observed = []
+            mock_q.submit.side_effect = lambda *_a, **_kw: observed.append(
+                mock_q._stagger_seconds
+            )
+
+            s._run_schedule(sample_schedule)
+
+        assert observed == [1.5]
+        assert mock_q._stagger_seconds == 1.5
+
+    def test_wait_for_batch_default_timeout_1800(self):
+        """回归 B4: JobQueue wait_for_batch 默认等待 30 分钟。"""
+        import inspect
+        from backend.core.job_queue import JobQueue
+
+        sig = inspect.signature(JobQueue.wait_for_batch)
+        assert sig.parameters["timeout"].default == 1800.0
+
+    def test_schedule_wait_timeout_override_and_default(
+        self, tmp_schedules, sample_schedule
+    ):
+        """回归 B4/B5: 两条完成路径都支持 override，默认 1800s。"""
+        with patch("backend.core.scheduler.JobQueue") as MockJQ:
+            mock_q = MockJQ.get_instance.return_value
+            s = Scheduler.get_instance()
+            batch = self._prepare(s, sample_schedule, mock_q)
+
+            sample_schedule.config = {"wait_timeout_seconds": 2400.0}
+            s._run_schedule(sample_schedule)
+            assert mock_q.wait_for_batch.call_args.kwargs["timeout"] == 2400.0
+
+            mock_q.wait_for_batch.reset_mock()
+            sample_schedule.config = {}
+            s._run_schedule(sample_schedule)
+            assert mock_q.wait_for_batch.call_args.kwargs["timeout"] == 1800.0
+
+            mock_q.wait_for_batch.reset_mock()
+            sample_schedule.config = {"wait_timeout_seconds": 2400.0}
+            s._complete_run_after_batch(sample_schedule, batch, ["600595"])
+            assert mock_q.wait_for_batch.call_args.kwargs["timeout"] == 2400.0
+
+            mock_q.wait_for_batch.reset_mock()
+            sample_schedule.config = {}
+            s._complete_run_after_batch(sample_schedule, batch, ["600595"])
+            assert mock_q.wait_for_batch.call_args.kwargs["timeout"] == 1800.0
