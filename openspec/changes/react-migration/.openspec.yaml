@@ -1,0 +1,50 @@
+schema: spec-driven
+change_id: react-migration
+title: React SPA 迁移 (替代 Streamlit 渲染)
+kind: breaking
+version: v0.7.0
+created: 2026-07-15
+status: proposed
+
+# 硬约束 (hard constraints — 不要协商)
+hard_constraints:
+  # 不动 Python 业务代码
+  - 不修改 tradingagents/ 任何文件
+  - 不修改 cli/ 任何文件
+  - 不修改 backend/core/ 任何文件
+  # Phase 3 之前不删 streamlit 渲染代码
+  - Phase 1-2 期间 web/app.py / web/components/*.py / web/styles/elements.css / web/progress.py 必须保留
+  - Phase 3 触发条件满足前, 不删除任何 streamlit 渲染代码
+  - Phase 1-2 期间 React SPA + Streamlit 并行运行 (双端口)
+  # 不修改依赖
+  - 不修改 pyproject.toml (React 独立, 不入 Python venv)
+  - 不修改现有 Python 测试 (0 回归, 删除前必须 757 passed)
+  # 数据兼容
+  - 复用 ~/.tradingagents/ 目录结构
+  - 不修改 portfolio_store / scheduler / history_store / log_store 任何 JSON 格式
+  # Parity 硬约束 (Phase 2 每页必走 5 维度校验, 全绿才计入完成)
+  - Phase 2 每页迁移完后, 必须跑 parity-check.md § 5.1 的 5 步 (patch + verify + 用户确认), 全绿才计入完成
+  - Phase 2 每页 parity 5 维度 (功能/数据/UI/性能/错误) 任一 ❌ → 该页任务不算完成 → 不进 Phase 2 下一项
+  - 功能 / 数据 / 错误维度 0 容忍 (100% 一致), UI 容忍 0.5% 像素差, 性能容忍 ≤ 2× Streamlit 实际值
+  - 任一页 parity check ❌ → Phase 2 整体不算完成 → Phase 3 触发条件不满足 → 不删 streamlit
+  - parity tooling 脚本 (scripts/parity_check.py / parity_visual.py / parity_perf.py / parity_fault_inject.py) 由 Phase 1 / Phase 2 实施者编写并维护
+
+# 阶段触发 (phase triggers — 必须显式满足)
+phase_triggers:
+  phase_3_delete_streamlit:
+    required:
+      - React SPA 全部 9 个 sidebar 页跑通且 e2e 通过
+      - 每页 parity-check.md § 4 详细 checklist 全部通过 (5 维度)
+      - Phase 2.10 整体 parity check 9 页串行通过 (parity-check.md § 5.2)
+      - Playwright e2e 0 失败
+      - 用户手动跑一遍全部 9 个页 (用户截图 / 录屏) + 每页文字确认 "✅ parity 通过"
+      - 用户明确下令 "现在可以删 streamlit 代码"
+      - 现有 pytest 757 passed (0 回归)
+      - 现有 streamlit 切到 fallback 端口运行 7 天无关键问题
+    forbidden_until_triggered:
+      - 删除 web/app.py
+      - 删除 web/components/*.py
+      - 删除 web/styles/elements.css
+      - 删除 web/progress.py
+      - 删除 tests/test_web_*.py / tests/test_streamlit_*.py / tests/test_chart_panel*.py 等
+      - 从 pyproject.toml 移除 streamlit 依赖
