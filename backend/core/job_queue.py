@@ -294,48 +294,21 @@ class JobQueue:
                     job.elapsed = job.finished_at - (job.started_at or job.finished_at)
 
     def _run_pipeline(self, job: Job, config: dict) -> None:
-        """实际跑 pipeline。
+        """Run one job through the canonical H1 + H2 analysis entry point.
 
-        默认调用 `web.runner._run` — 同一份代码被 web UI 和 batch 复用,确保
-        stage 解析、HistoryStore 写入、stats 上报行为完全一致。
+        No progress / signal / stages are mirrored back onto ``job`` —
+        HistoryStore is the source of truth (run_one_analysis has already
+        written H1), and job.status is managed by ``_run_one``'s try/except.
+        The Job dataclass's progress fields (completed_stages etc.) are
+        kept only for the in-memory UI; UI will eventually read H1 entries
+        directly.
         """
-        # 延迟 import,避免 backend 包 import 时拉起整个 tradingagents 栈
-        from web.runner import _run as web_run
+        # Keep this import lazy so importing the queue does not initialize the
+        # full graph/LLM stack.  run_one_analysis owns history creation and
+        # log finalization; this queue only owns Job lifecycle/status.
+        from web.runner import run_one_analysis
 
-        # 创建一个 web 用的 ProgressTracker,把 stage 写回 Job
-        from web.progress import ProgressTracker
-
-        tracker = ProgressTracker(ticker=job.ticker, trade_date=job.trade_date)
-        tracker.is_running = True
-        tracker.analysis_id = job.analysis_id
-
-        # 用闭包劫持 tracker 的 stage_done,把 stage 状态镜像回 job
-        original_mark_done = tracker.mark_stage_done
-
-        def mirror_mark_done(stage_id: str, report: str = "") -> None:
-            with job._lock:
-                if stage_id not in job.completed_stages:
-                    job.completed_stages.append(stage_id)
-                if report:
-                    job.stage_reports[stage_id] = str(report)[:500]
-                if job.current_stage == stage_id:
-                    job.current_stage = ""
-            original_mark_done(stage_id, report)
-
-        def mirror_mark_active(stage_id: str) -> None:
-            with job._lock:
-                job.current_stage = stage_id
-            from web.progress import ProgressTracker as _PT
-            _PT.mark_stage_active(tracker, stage_id)
-
-        tracker.mark_stage_done = mirror_mark_done  # type: ignore[assignment]
-        tracker.mark_stage_active = mirror_mark_active  # type: ignore[assignment]
-
-        web_run(job.ticker, job.trade_date, config, tracker, job.analysis_id)
-
-        # 写回 signal
-        with job._lock:
-            job.signal = tracker.signal or ""
+        run_one_analysis(job.ticker, job.trade_date, config)
 
     def _handle_em_block(self, job: Job, err: str) -> None:
         """东财 429/被封:退避一次后重试一次。仍然失败则记 error。"""

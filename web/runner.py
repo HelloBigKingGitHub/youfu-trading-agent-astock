@@ -6,7 +6,6 @@ import logging
 import re
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -83,7 +82,13 @@ def _infer_active_stage(tracker: ProgressTracker) -> None:
 
 
 def _run(ticker: str, trade_date: str, config: dict, tracker: ProgressTracker, analysis_id: str) -> None:
-    """Execute the full pipeline in the current thread."""
+    """Execute the full pipeline in the current thread.
+
+    Owns the LogWriter (H2 meta.json + agent_outputs.jsonl + tool_calls.jsonl
+    + llm_messages.jsonl). ``run_one_analysis`` wraps this with H1 history
+    management so all 4 entry points (Web UI / batch API / CLI / scheduler)
+    share the same H1+H2 path.
+    """
     from cli.stats_handler import StatsCallbackHandler
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
@@ -136,25 +141,12 @@ def _run(ticker: str, trade_date: str, config: dict, tracker: ProgressTracker, a
 
         tracker.mark_complete(last_chunk, signal)
         elapsed = time.time() - tracker.start_time
-        _history_store.mark_complete(
-            analysis_id,
-            signal=signal,
-            elapsed=elapsed,
-            completed_stages=list(tracker.completed_stages),
-        )
-        # Set the results path so report viewer can find the full log
-        results_path = str(_RESULTS_DIR / ticker / "TradingAgentsStrategy_logs" / f"full_states_log_{trade_date}.json")
-        _history_store.set_results_path(analysis_id, results_path)
-
-        # === 新增: finalize log writer ===
         log_writer.finalize(signal=signal, elapsed_sec=elapsed,
                             completed_stages=completed_stages)
 
     except Exception as exc:
         tracker.mark_error(str(exc))
         elapsed = time.time() - tracker.start_time
-        _history_store.mark_error(analysis_id, str(exc), elapsed=elapsed)
-        # === 新增: error finalize ===
         try:
             log_writer.finalize(signal="", elapsed_sec=elapsed, error=str(exc))
         except Exception:
@@ -232,31 +224,77 @@ def _classify_chunk(chunk: dict[str, Any], stats: dict) -> Iterator[LogChunk]:
         )
 
 
+def run_one_analysis(ticker: str, trade_date: str, config: dict) -> str:
+    """Run one analysis synchronously through the canonical entry point.
+
+    This is the only high-level single-analysis API. It owns creation and
+    finalization of the **H1** history entry (history.json), and delegates
+    the **H2** stream chunks / meta.json to ``_run``.
+
+    Behaviour identical to the Web UI's per-button flow (which previously
+    called ``run_analysis_in_thread``); batch API, CLI batch and the
+    scheduler route through here so they also write a history entry.
+    """
+    started_at = time.time()
+    entry = _history_store.create(ticker, trade_date, status="running")
+    analysis_id = entry.analysis_id
+    tracker = ProgressTracker(
+        analysis_id=analysis_id,
+        ticker=ticker,
+        trade_date=trade_date,
+    )
+    tracker.is_running = True
+    tracker.mark_stage_active("market")
+
+    try:
+        _run(ticker, trade_date, config, tracker, analysis_id)
+    except Exception as exc:
+        tracker.mark_error(str(exc))
+        _history_store.mark_error(analysis_id, str(exc),
+                                  elapsed=time.time() - started_at)
+        raise
+
+    elapsed = time.time() - started_at
+    _history_store.mark_complete(
+        analysis_id,
+        signal=tracker.signal or "",
+        elapsed=elapsed,
+        completed_stages=list(tracker.completed_stages),
+    )
+    results_path = str(
+        _RESULTS_DIR / ticker / "TradingAgentsStrategy_logs"
+        / f"full_states_log_{trade_date}.json"
+    )
+    _history_store.set_results_path(analysis_id, results_path)
+    return analysis_id
+
+
 def run_analysis_in_thread(
     ticker: str,
     trade_date: str,
     config: dict,
-    tracker: ProgressTracker,
+    tracker: ProgressTracker | None = None,
 ) -> threading.Thread:
-    """Launch the pipeline in a daemon thread. Returns the thread handle."""
-    tracker.ticker = ticker
-    tracker.trade_date = trade_date
-    tracker.is_running = True
-    tracker.mark_stage_active("market")
+    """Backward-compat wrapper - 内部调 run_one_analysis + 自己开 thread.
 
-    # Create history entry via unified store
-    entry = _history_store.create(ticker, trade_date, status="running")
-    analysis_id = entry.analysis_id
-    tracker.analysis_id = analysis_id
+    Web UI 还在用这个. run_one_analysis 创建自己的 tracker (canonical).
+    Legacy tracker 收到 error 时会 mark_error (best-effort), 别的 live
+    updates 由 canonical tracker 负责. 调 run_one_analysis 不返回
+    analysis_id 给 legacy tracker 是可接受的, 这是 web UI legacy tracker,
+    不影响后续 console 业务.
+    """
+    if tracker is not None:
+        tracker.ticker = ticker
+        tracker.trade_date = trade_date
+        tracker.is_running = True
+        tracker.mark_stage_active("market")
 
     def _target() -> None:
-        start = time.time()
         try:
-            _run(ticker, trade_date, config, tracker, analysis_id)
+            run_one_analysis(ticker, trade_date, config)
         except Exception as exc:
-            tracker.mark_error(str(exc))
-            elapsed = time.time() - start
-            _history_store.mark_error(analysis_id, str(exc), elapsed=elapsed)
+            if tracker is not None:
+                tracker.mark_error(str(exc))
 
     t = threading.Thread(target=_target, daemon=True)
     t.start()
