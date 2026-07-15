@@ -15,6 +15,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 load_dotenv(_PROJECT_ROOT / ".env")
 
 from backend.api import analyze_router, progress_router, result_router, history_router, sse_router, batch_router  # noqa: E402
+from backend.api.settings import router as settings_router  # noqa: E402
 
 app = FastAPI(
     title="TradingAgents-Astock API",
@@ -22,10 +23,17 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# CORS: allow mobile SPA to call this API
+# CORS: allow mobile SPA to call this API. Phase 1 also whitelists the React
+# dev server (5173) and the Streamlit UI (8501) so the new frontend can call
+# /api/settings during parity validation. Phase 3 will go same-origin.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",   # React dev server
+        "http://127.0.0.1:5173",   # React dev server (alt)
+        "http://localhost:8501",   # Streamlit UI
+        "http://127.0.0.1:8501",   # Streamlit UI (alt)
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -38,6 +46,7 @@ app.include_router(result_router)
 app.include_router(history_router)
 app.include_router(sse_router)
 app.include_router(batch_router)
+app.include_router(settings_router, prefix="/api")
 
 
 @app.get("/api/health")
