@@ -5,6 +5,7 @@ import { Header } from '@/components/layout/Header';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { HistoryPage } from '@/pages/HistoryPage';
 import { LogsPage } from '@/pages/LogsPage';
+import ChartPage from '@/pages/ChartPage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 
 function Layout({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle?: string }) {
@@ -79,7 +80,7 @@ const router = createBrowserRouter([
     path: '/chart',
     element: (
       <Layout title="走势图" subtitle="K 线 + 实时报价">
-        <PlaceholderPage title="走势图" icon="📈" phase="Phase 2.7" description="K 线图 + 实时报价 + 多周期" />
+        <ChartPage />
       </Layout>
     ),
   },

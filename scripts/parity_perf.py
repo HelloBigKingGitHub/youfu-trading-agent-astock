@@ -11,7 +11,7 @@ The script deliberately uses only the Python standard library.  Human-readable
 individual timings go to STDOUT and the one-line machine-readable contract is
 written to STDERR:
 
-    perf_ms: settings_FastAPI=Xms settings_React=Yms settings_Streamlit=Zms history_FastAPI=Xms history_React=Yms history_Streamlit=Zms
+    perf_ms: settings_FastAPI=Xms settings_React=Yms settings_Streamlit=Zms history_FastAPI=Xms history_React=Yms history_Streamlit=Zms logs_FastAPI=Xms logs_React=Yms logs_Streamlit=Zms chart_FastAPI=Xms chart_React=Yms chart_Streamlit=Zms
 """
 
 from __future__ import annotations
@@ -51,9 +51,14 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "Streamlit": "http://localhost:8501/history",
     },
     "logs": {
-        "FastAPI": "http://127.0.0.1:8000/api/logs/tickers",
+        "FastAPI": "http://localhost:8000/api/logs/tickers",
         "React": "http://localhost:5173/logs",
         "Streamlit": "http://localhost:8501/logs",
+    },
+    "chart": {
+        "FastAPI": "http://127.0.0.1:8000/api/chart/kline?ticker=600595&range=6m",
+        "React": "http://localhost:5173/chart?ticker=600595&range=6m",
+        "Streamlit": "http://localhost:8501/chart?ticker=600595&range=6m",
     },
 }
 
@@ -88,7 +93,7 @@ def main() -> int:
     parser.add_argument(
         "--page",
         default=None,
-        help="Gate-facing page key (settings, history, logs); all pages are always probed",
+        help="Gate-facing page key (settings, history, logs, chart); all pages are always probed",
     )
     args = parser.parse_args()
     if args.page is not None and args.page not in PAGE_REGISTRY:

@@ -11,6 +11,8 @@ the legacy Streamlit page and for environments without a browser.
 Machine-readable STDERR summaries:
     fault_diff: ...
     fault_diff_history: ...
+    fault_diff_logs: ...
+    fault_diff_chart: ...
 """
 
 from __future__ import annotations
@@ -60,13 +62,20 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "fault_url": "http://127.0.0.1:8000/api/logs/task?ticker=INVALID_TICKER_NONEXIST&task=9999",
         "fault_kind": "logs",
     },
+    "chart": {
+        "react_url": "http://localhost:5173/chart?ticker=999999&range=6m",
+        "streamlit_url": "http://localhost:8501/chart?ticker=999999&range=6m",
+        "fault_method": "GET",
+        "fault_url": "http://127.0.0.1:8000/api/chart/kline?ticker=999999&range=6m",
+        "fault_kind": "chart",
+    },
 }
 
 # Keep the regex intentionally small and UI-oriented.  The fallback marker is
 # useful because the initial HTML of an SPA often contains no rendered error.
 ERROR_MARKERS = re.compile(
-    r"(?:加载日志失败|加载历史失败|加载设置失败|保存失败|请求失败|错误|Error|error|Invalid|invalid|"
-    r"Validation|validation|Exception|exception|Traceback|traceback|404|422)",
+    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|保存失败|请求失败|错误|Error|error|Invalid|invalid|"
+    r"Validation|validation|Exception|exception|Traceback|traceback|404|422|502)",
     re.IGNORECASE,
 )
 TAG_RE = re.compile(r"<[^>]+>")
@@ -190,9 +199,33 @@ const [reactUrl, streamlitUrl, pageKey, executablePath] = process.argv.slice(3);
         });
       });
     }
+    if (pageKey === 'chart' && label === 'react') {
+      // Intercept /api/chart/kline so React's ChartPage reliably surfaces the
+      // destructive error banner (chart-kline-error). The /chart URL already
+      // carries ticker=999999 (valid 6-digit format but unreachable) which the
+      // FastAPI /chart/kline endpoint answers with 200 + empty klines — that
+      // alone yields the empty state, NOT the error banner. The route
+      // interception is what guarantees we exercise the chart-kline-error
+      // Alert exactly like the production 5xx fallback does.
+      await page.route(url => {
+        try {
+          const parsed = new URL(String(url));
+          return parsed.hostname === 'localhost'
+            && parsed.pathname === '/api/chart/kline';
+        } catch (_) {
+          return false;
+        }
+      }, async route => {
+        await route.fulfill({
+          status: 502,
+          contentType: 'application/json',
+          body: JSON.stringify({ detail: 'fault-injection: upstream mootdx/sina/push2his all unavailable' }),
+        });
+      });
+    }
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForTimeout(1500);
-    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [role="alert"]');
+    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [data-testid="chart-kline-error"], [data-testid="chart-empty"], [role="alert"]');
     let text = '';
     if (await errorLocator.count()) text = await errorLocator.first().innerText();
     if (!text) text = await page.locator('body').innerText();
@@ -260,6 +293,14 @@ def _ui_results(page: str, cfg: dict[str, str]) -> tuple[dict[str, str], list[st
     return ui_results, ui_errors
 
 
+_FAULT_MARKERS = {
+    "settings": "fault_diff",
+    "history": "fault_diff_history",
+    "logs": "fault_diff_logs",
+    "chart": "fault_diff_chart",
+}
+
+
 def _run_page(page: str, cfg: dict[str, str]) -> int:
     api_status, api_detail = _api_fault(page, cfg)
     ui_results, ui_errors = _ui_results(page, cfg)
@@ -276,7 +317,7 @@ def _run_page(page: str, cfg: dict[str, str]) -> int:
         if react_text == streamlit_text
         else f"React[{react_text}] != Streamlit[{streamlit_text}]"
     )
-    marker = "fault_diff_logs" if page == "logs" else ("fault_diff_history" if page == "history" else "fault_diff")
+    marker = _FAULT_MARKERS.get(page, "fault_diff")
 
     print(f"[{page}] fault {cfg['fault_method']} {cfg['fault_url']}")
     print(f"[{page}] {api_summary}")
@@ -295,7 +336,7 @@ def main() -> int:
     parser.add_argument(
         "--page",
         default=None,
-        help="Gate-facing page key (settings, history, logs); all pages are always probed",
+        help="Gate-facing page key (settings, history, logs, chart); all pages are always probed",
     )
     args = parser.parse_args()
     if args.page is not None and args.page not in PAGE_REGISTRY:

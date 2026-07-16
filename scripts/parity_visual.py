@@ -63,6 +63,14 @@ PAGE_REGISTRY: dict[str, dict[str, object]] = {
         "out_streamlit": Path("/tmp/streamlit_logs_page.png"),
         "out_diff": Path("/tmp/logs_visual_diff.png"),
     },
+    "chart": {
+        "react_url": "http://localhost:5173/chart?ticker=600595&range=6m",
+        "streamlit_url": "http://localhost:8501/chart?ticker=600595&range=6m",
+        "streamlit_button": "走势",
+        "out_react": Path("/tmp/react_chart_page.png"),
+        "out_streamlit": Path("/tmp/streamlit_chart_page.png"),
+        "out_diff": Path("/tmp/chart_visual_diff.png"),
+    },
 }
 
 
@@ -314,14 +322,22 @@ PAGE_STRUCTURAL: dict[str, dict[str, object]] = {
         "label": "logs page",
         "selector_kind_react": "logs_ticker_list",
         "regions": {
-            # Phase 2.3 — GitHub-PR-style 1:3 double column. Both pages must
-            # surface the per-ticker chunk store with the same 3 chunk-type
-            # tabs and the same ticker/task navigation primitives.
             "identity": ["📋", "日志"],
             "ticker_list": [["Tickers"], ["ticker"]],
             "task_list": [["Tasks"], ["runs"]],
             "chunk_viewer": [["chunks"], ["LLM"]],
             "chunk_types": [["Agent Outputs"], ["LLM Messages"], ["Tool Calls"]],
+        },
+    },
+    "chart": {
+        "label": "chart page",
+        "selector_kind_react": "chart_canvas",
+        "regions": {
+            "identity": ["📈", "走势"],
+            "ticker_input": [["股票代码"], ["600595"]],
+            "range_buttons": [["1d"], ["1w"], ["1m"], ["3m"], ["6m"], ["1y"], ["all"]],
+            "quote_banner": [["实时报价"], ["现价"], ["涨跌幅"]],
+            "chart_canvas": [["K线图"], ["数据来源"]],
         },
     },
 }

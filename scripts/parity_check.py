@@ -24,6 +24,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 
 SETTINGS_FILE = Path.home() / ".tradingagents" / "settings.json"
@@ -212,9 +213,35 @@ def _check_logs() -> int:
     return 0
 
 
+def _check_chart() -> int:
+    """Phase 2.4 chart page — hash the canonical API K-line payload."""
+    url = "http://127.0.0.1:8000/api/chart/kline?ticker=600595&range=6m"
+    try:
+        request = Request(url, headers={"User-Agent": "parity-check/2.4"})
+        with urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"chart endpoint failed: {exc}", file=sys.stderr)
+        return 1
+
+    klines = payload.get("klines") if isinstance(payload, dict) else None
+    if not isinstance(klines, list):
+        print("chart endpoint returned no klines list", file=sys.stderr)
+        return 1
+    canonical = json.dumps(klines, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.md5(canonical).hexdigest()
+    print(f"chart endpoint  : {url}")
+    print(f"chart source    : {payload.get('source', 'unknown')}")
+    print(f"chart count     : {len(klines)}")
+    print(f"md5(canonical)  : {digest}")
+    print(f"data_hash_chart: {digest}", file=sys.stderr)
+    print(f"data_count_chart: {len(klines)}", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Parity check — data hash per page")
-    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), or 'logs' (P2.3)")
+    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), or 'chart' (P2.4)")
     args = parser.parse_args()
 
     if args.page == "settings":
@@ -223,9 +250,11 @@ def main() -> int:
         return _check_history()
     if args.page == "logs":
         return _check_logs()
+    if args.page == "chart":
+        return _check_chart()
 
     print(
-        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs')",
+        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart')",
         file=sys.stderr,
     )
     return 1
