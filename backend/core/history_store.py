@@ -23,6 +23,14 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 _HISTORY_DIR = Path.home() / ".tradingagents" / "logs" / "history"
 _RESULTS_DIR = Path.home() / ".tradingagents" / "logs"
 
+# P2.14 hotfix: a "zombie" analysis is one whose history.json claims
+# status=running but the worker thread that should be progressing it was
+# SIGKILL'd during a uvicorn restart. The file persists, no thread ever
+# updates it again, and it sits forever at elapsed=0 / stages=[]. We treat
+# any running entry that has not progressed within this many seconds as
+# a zombie on backend startup.
+ZOMBIE_THRESHOLD_SEC = 60.0
+
 
 @dataclass
 class HistoryEntry:
@@ -235,6 +243,53 @@ class HistoryStore:
             if e.ticker == ticker and e.trade_date == trade_date:
                 return e
         return None
+
+    # ── P2.14 hotfix: zombie detection ─────────────────────────────────────────
+
+    @staticmethod
+    def is_zombie(entry: HistoryEntry, now: float | None = None) -> bool:
+        """Return True if entry claims to be running but is suspiciously stale.
+
+        A zombie is an entry where:
+          - status == "running"
+          - elapsed == 0 (never progressed)
+          - completed_stages == [] (no stage ever finished)
+          - created_at older than ZOMBIE_THRESHOLD_SEC (default 60s)
+
+        Root cause: a uvicorn restart SIGKILL'd the worker thread while the
+        history.json was already on disk with status=running. The file
+        persists but no thread ever updates it again, so it sits at 0/0/0
+        forever. Used by the backend startup hook to mark these as error.
+        """
+        if now is None:
+            now = time.time()
+        return (
+            entry.status == "running"
+            and entry.elapsed == 0.0
+            and not entry.completed_stages
+            and (now - entry.created_at) > ZOMBIE_THRESHOLD_SEC
+        )
+
+    def cleanup_zombies(self, now: float | None = None) -> list[str]:
+        """Mark all zombie entries as error. Returns list of analysis_ids cleaned.
+
+        Called from ``backend.main`` on FastAPI startup so the recent-list
+        UI never shows a permanently-stuck entry. Idempotent — re-running
+        on a clean store is a no-op.
+        """
+        if now is None:
+            now = time.time()
+        cleaned: list[str] = []
+        entries, _ = self.list_all(limit=1000, offset=0)
+        for entry in entries:
+            if self.is_zombie(entry, now=now):
+                self.mark_error(
+                    entry.analysis_id,
+                    error="分析被中断 (server restart, thread was SIGKILL'd)",
+                    elapsed=entry.elapsed or 0.0,
+                )
+                cleaned.append(entry.analysis_id)
+        return cleaned
 
     # ── internal ───────────────────────────────────────────────────────────────
 

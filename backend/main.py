@@ -1,6 +1,8 @@
 """FastAPI backend for TradingAgents-Astock mobile API."""
 
+import logging
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -22,10 +24,43 @@ from backend.api.sector import router as sector_router  # noqa: E402
 from backend.api.portfolio import router as portfolio_router  # noqa: E402
 from backend.api.schedule import router as schedule_router  # noqa: E402
 
+from backend.core.history_store import get_history_store  # noqa: E402
+
+logger = logging.getLogger("backend.main")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """FastAPI lifespan: cleanup zombie analyses on startup.
+
+    P2.14 hotfix — when uvicorn is restarted (SIGKILL of the old PID),
+    any worker thread that was mid-analysis dies, but the history.json
+    file persists with status=running / elapsed=0 / stages=[]. No thread
+    ever picks it back up, so the recent-list UI shows a permanently-
+    stuck entry. On every startup we sweep these and mark them error so
+    the UI stays clean. Idempotent — a fresh store has no zombies.
+    """
+    try:
+        store = get_history_store()
+        cleaned = store.cleanup_zombies()
+        if cleaned:
+            logger.warning(
+                "P2.14 startup: marked %d zombie analyses as error: %s",
+                len(cleaned),
+                ", ".join(cleaned[:10]) + ("…" if len(cleaned) > 10 else ""),
+            )
+        else:
+            logger.info("P2.14 startup: no zombie analyses to clean")
+    except Exception as exc:  # pragma: no cover — never block startup
+        logger.exception("P2.14 zombie cleanup failed (non-fatal): %s", exc)
+    yield
+
+
 app = FastAPI(
     title="TradingAgents-Astock API",
     description="移动端 API — A股多Agent投研框架",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS: allow mobile SPA to call this API. Phase 1 also whitelists the React

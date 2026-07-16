@@ -25,7 +25,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-router = APIRouter()
+router = APIRouter(prefix="/api")
 
 
 # ── shared response models for new endpoints ─────────────────────────────────
@@ -69,7 +69,7 @@ def _entry_to_item(entry) -> RecentAnalyzeItem:
 
 # ── POST /api/analyze ────────────────────────────────────────────────────────
 
-@router.post("/api/analyze", response_model=AnalyzeResponse, status_code=202)
+@router.post("/analyze", response_model=AnalyzeResponse, status_code=202)
 def create_analysis(request: AnalyzeRequest) -> AnalyzeResponse:
     """Start a new stock analysis. Returns immediately with analysis_id."""
     try:
@@ -86,7 +86,7 @@ def create_analysis(request: AnalyzeRequest) -> AnalyzeResponse:
 
 # ── GET /api/analyze/recent ──────────────────────────────────────────────────
 
-@router.get("/api/analyze/recent", response_model=List[RecentAnalyzeItem])
+@router.get("/analyze/recent", response_model=List[RecentAnalyzeItem])
 def list_recent_analyzes(
     limit: int = Query(20, ge=1, le=100),
 ) -> List[RecentAnalyzeItem]:
@@ -102,9 +102,39 @@ def list_recent_analyzes(
     return [_entry_to_item(e) for e in entries]
 
 
+# ── P2.14 hotfix: POST /api/analyze/{analysis_id}/mark_error ─────────────────
+
+@router.post("/analyze/{analysis_id}/mark_error", status_code=200)
+def mark_analysis_error(
+    analysis_id: str,
+    reason: str = Query("manual cleanup"),
+) -> dict:
+    """Force-mark a stuck analysis as errored (manual cleanup tool).
+
+    P2.14 hotfix — for cases where the user sees a permanently-running
+    analysis (zombie: status=running, elapsed=0, no thread progressing),
+    this endpoint lets the React UI offer a one-click cleanup. The
+    backend startup hook does the same sweep automatically on restart;
+    this is for the live case where a new zombie appears mid-session.
+    """
+    store = get_history_store()
+    entry = store.get(analysis_id)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"分析 {analysis_id!r} 不存在",
+        )
+    store.mark_error(analysis_id, reason, elapsed=entry.elapsed or 0.0)
+    return {
+        "analysis_id": analysis_id,
+        "status": "error",
+        "reason": reason,
+    }
+
+
 # ── GET /api/analyze/{analysis_id}/report ────────────────────────────────────
 
-@router.get("/api/analyze/{analysis_id}/report", response_model=AnalyzeReport)
+@router.get("/analyze/{analysis_id}/report", response_model=AnalyzeReport)
 def get_analyze_report(analysis_id: str) -> AnalyzeReport:
     """Return the full report for a past analysis.
 
