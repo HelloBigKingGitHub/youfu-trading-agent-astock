@@ -4,6 +4,7 @@ import { Sidebar } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { HistoryPage } from '@/pages/HistoryPage';
+import { LogsPage } from '@/pages/LogsPage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 
 function Layout({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle?: string }) {
@@ -69,8 +70,8 @@ const router = createBrowserRouter([
   {
     path: '/logs',
     element: (
-      <Layout title="日志" subtitle="LangGraph stream chunks 实时 + 历史">
-        <PlaceholderPage title="日志" icon="📋" phase="Phase 2.3" description="LangGraph stream 日志 (LLM / tool / agent_output)" />
+      <Layout title="📋 日志" subtitle="LangGraph stream chunks 实时 + 历史">
+        <LogsPage />
       </Layout>
     ),
   },

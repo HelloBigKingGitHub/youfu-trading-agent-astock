@@ -53,13 +53,20 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "fault_url": "http://127.0.0.1:8000/api/history?limit=invalid",
         "fault_kind": "history",
     },
+    "logs": {
+        "react_url": "http://localhost:5173/logs",
+        "streamlit_url": "http://localhost:8501/logs",
+        "fault_method": "GET",
+        "fault_url": "http://127.0.0.1:8000/api/logs/task?ticker=INVALID_TICKER_NONEXIST&task=9999",
+        "fault_kind": "logs",
+    },
 }
 
 # Keep the regex intentionally small and UI-oriented.  The fallback marker is
 # useful because the initial HTML of an SPA often contains no rendered error.
 ERROR_MARKERS = re.compile(
-    r"(?:加载历史失败|加载设置失败|保存失败|请求失败|错误|Error|error|Invalid|invalid|"
-    r"Validation|validation|Exception|exception|Traceback|traceback|422)",
+    r"(?:加载日志失败|加载历史失败|加载设置失败|保存失败|请求失败|错误|Error|error|Invalid|invalid|"
+    r"Validation|validation|Exception|exception|Traceback|traceback|404|422)",
     re.IGNORECASE,
 )
 TAG_RE = re.compile(r"<[^>]+>")
@@ -163,9 +170,29 @@ const [reactUrl, streamlitUrl, pageKey, executablePath] = process.argv.slice(3);
         });
       });
     }
+    if (pageKey === 'logs' && label === 'react') {
+      // Intercept the per-ticker task list so the React LogsPage's right
+      // column surfaces an error banner instead of an empty state. The
+      // ticker list endpoint stays un-intercepted so the page renders.
+      await page.route(url => {
+        try {
+          const parsed = new URL(String(url));
+          return parsed.hostname === 'localhost'
+            && parsed.pathname === '/api/logs/tasks';
+        } catch (_) {
+          return false;
+        }
+      }, async route => {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ detail: 'no logs for ticker \'INVALID_TICKER_NONEXIST\'' }),
+        });
+      });
+    }
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForTimeout(1500);
-    const errorLocator = page.locator('[data-testid="history-error"], [role="alert"]');
+    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [role="alert"]');
     let text = '';
     if (await errorLocator.count()) text = await errorLocator.first().innerText();
     if (!text) text = await page.locator('body').innerText();
@@ -249,7 +276,7 @@ def _run_page(page: str, cfg: dict[str, str]) -> int:
         if react_text == streamlit_text
         else f"React[{react_text}] != Streamlit[{streamlit_text}]"
     )
-    marker = "fault_diff_history" if page == "history" else "fault_diff"
+    marker = "fault_diff_logs" if page == "logs" else ("fault_diff_history" if page == "history" else "fault_diff")
 
     print(f"[{page}] fault {cfg['fault_method']} {cfg['fault_url']}")
     print(f"[{page}] {api_summary}")
@@ -268,7 +295,7 @@ def main() -> int:
     parser.add_argument(
         "--page",
         default=None,
-        help="Gate-facing page key (settings or history); both pages are always probed",
+        help="Gate-facing page key (settings, history, logs); all pages are always probed",
     )
     args = parser.parse_args()
     if args.page is not None and args.page not in PAGE_REGISTRY:

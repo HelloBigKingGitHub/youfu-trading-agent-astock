@@ -50,6 +50,11 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "React": "http://localhost:5173/history",
         "Streamlit": "http://localhost:8501/history",
     },
+    "logs": {
+        "FastAPI": "http://127.0.0.1:8000/api/logs/tickers",
+        "React": "http://localhost:5173/logs",
+        "Streamlit": "http://localhost:8501/logs",
+    },
 }
 
 
@@ -83,7 +88,7 @@ def main() -> int:
     parser.add_argument(
         "--page",
         default=None,
-        help="Gate-facing page key (settings or history); both pages are always probed",
+        help="Gate-facing page key (settings, history, logs); all pages are always probed",
     )
     args = parser.parse_args()
     if args.page is not None and args.page not in PAGE_REGISTRY:

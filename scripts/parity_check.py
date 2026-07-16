@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parity check: data dimension — settings.json / history entries round-trip.
+"""Parity check: data dimension — settings.json / history / logs round-trip.
 
 Reads the on-disk data source for the page under test and emits an md5 hash
 to STDERR so the parity gate runner can diff React vs Streamlit views (both
@@ -8,10 +8,11 @@ UIs ultimately read the same on-disk files, so hash equality == data parity).
 Usage:
     python scripts/parity_check.py --page settings
     python scripts/parity_check.py --page history
+    python scripts/parity_check.py --page logs
 
 Output (STDERR, line-based, easy to grep):
     data_hash: <md5hex>
-    data_count: <N>          # history page only
+    data_count: <N>          # history / logs pages
 
 Exit code: 0 if file/dir exists or has been freshly seeded, 1 on hard error.
 """
@@ -27,6 +28,7 @@ from pathlib import Path
 
 SETTINGS_FILE = Path.home() / ".tradingagents" / "settings.json"
 HISTORY_DIR = Path.home() / ".tradingagents" / "logs" / "history"
+LOGS_ROOT = Path.home() / ".tradingagents" / "logs"
 
 # Stable seed for the parity round-trip — written once if missing, then
 # used to hash the file in deterministic order. Avoids nondeterminism from
@@ -135,18 +137,95 @@ def _check_history() -> int:
     return 0
 
 
+def _check_logs() -> int:
+    """Phase 2.3 logs page — concatenate every meta.json under
+    ~/.tradingagents/logs/{ticker}/{date}_run{NN}/meta.json.
+
+    The store is the single source of truth for both the React logs page
+    (which reads via FastAPI /api/logs/*) and the Streamlit logs panel
+    (which reads the same dir via LogStore). The per-task meta.json is the
+    canonical Pydantic mirror; we hash its sorted-keys content to assert
+    data parity between the two views.
+
+    Excludes the legacy sub-tree ({ticker}/TradingAgentsStrategy_logs/) —
+    it carries full_states_log_*.json blobs that dwarf the meta and would
+    skew the parity hash. Those legacy tasks still appear in /api/logs but
+    with chunk_counts=0, so excluding their meta from the parity hash is
+    intentional and stable.
+    """
+    if not LOGS_ROOT.is_dir():
+        print(f"logs root missing: {LOGS_ROOT}", file=sys.stderr)
+        return 1
+
+    # Iterate ticker dirs (skip hidden + the dedicated history dir).
+    ticker_dirs = sorted(
+        d for d in LOGS_ROOT.iterdir()
+        if d.is_dir() and not d.name.startswith(".") and d.name != "history"
+    )
+    if not ticker_dirs:
+        print(f"no tickers under {LOGS_ROOT}", file=sys.stderr)
+        print("data_hash: empty", file=sys.stderr)
+        print("data_count: 0", file=sys.stderr)
+        return 1
+
+    meta_paths: list[Path] = []
+    for ticker_dir in ticker_dirs:
+        # Skip the legacy sub-tree: it does not follow the meta.json convention.
+        for child in sorted(ticker_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            if child.name == "TradingAgentsStrategy_logs":
+                continue
+            meta = child / "meta.json"
+            if meta.is_file():
+                meta_paths.append(meta)
+
+    if not meta_paths:
+        print(f"no meta.json under {LOGS_ROOT}", file=sys.stderr)
+        print("data_hash: empty", file=sys.stderr)
+        print("data_count: 0", file=sys.stderr)
+        return 1
+
+    parts: list[bytes] = []
+    for path in meta_paths:
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"skipping malformed {path}: {exc}", file=sys.stderr)
+            continue
+        parts.append(
+            json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+    joined = b"\n".join(parts)
+    digest = hashlib.md5(joined).hexdigest()
+
+    # STDOUT: human-readable summary
+    print(f"logs root      : {LOGS_ROOT}")
+    print(f"ticker dirs    : {len(ticker_dirs)}")
+    print(f"meta.json files: {len(parts)}")
+    print(f"md5(canonical) : {digest}")
+
+    # STDERR: machine-greppable key/value
+    print(f"data_hash: {digest}", file=sys.stderr)
+    print(f"data_count: {len(parts)}", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Parity check — data hash per page")
-    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1) or 'history' (P2.2)")
+    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), or 'logs' (P2.3)")
     args = parser.parse_args()
 
     if args.page == "settings":
         return _check_settings()
     if args.page == "history":
         return _check_history()
+    if args.page == "logs":
+        return _check_logs()
 
     print(
-        f"unsupported --page {args.page!r} (supported: 'settings', 'history')",
+        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs')",
         file=sys.stderr,
     )
     return 1

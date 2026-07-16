@@ -55,6 +55,14 @@ PAGE_REGISTRY: dict[str, dict[str, object]] = {
         "out_streamlit": Path("/tmp/streamlit_history_page.png"),
         "out_diff": Path("/tmp/history_visual_diff.png"),
     },
+    "logs": {
+        "react_url": "http://localhost:5173/logs",
+        "streamlit_url": "http://localhost:8501/logs",
+        "streamlit_button": "日志",
+        "out_react": Path("/tmp/react_logs_page.png"),
+        "out_streamlit": Path("/tmp/streamlit_logs_page.png"),
+        "out_diff": Path("/tmp/logs_visual_diff.png"),
+    },
 }
 
 
@@ -302,6 +310,20 @@ PAGE_STRUCTURAL: dict[str, dict[str, object]] = {
             "action_header": [["操作"]],
         },
     },
+    "logs": {
+        "label": "logs page",
+        "selector_kind_react": "logs_ticker_list",
+        "regions": {
+            # Phase 2.3 — GitHub-PR-style 1:3 double column. Both pages must
+            # surface the per-ticker chunk store with the same 3 chunk-type
+            # tabs and the same ticker/task navigation primitives.
+            "identity": ["📋", "日志"],
+            "ticker_list": [["Tickers"], ["ticker"]],
+            "task_list": [["Tasks"], ["runs"]],
+            "chunk_viewer": [["chunks"], ["LLM"]],
+            "chunk_types": [["Agent Outputs"], ["LLM Messages"], ["Tool Calls"]],
+        },
+    },
 }
 
 
@@ -447,7 +469,7 @@ def main() -> int:
     parser.add_argument(
         "--page",
         required=True,
-        help="Page key (settings, history)",
+        help="Page key (settings, history, logs)",
     )
     args = parser.parse_args()
     cfg = PAGE_REGISTRY.get(args.page)
