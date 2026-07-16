@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Measure the Phase 1 settings parity endpoints.
+"""Measure the React/Streamlit/FastAPI latency for every parity page.
 
-The script deliberately uses only the Python standard library so it can run in
-an environment where the project dependencies are not installed.  It measures
-both FastAPI endpoints (``/api/settings`` and ``/api/health``), the React Vite
-root, and the Streamlit root.  The machine-readable summary is written to
-STDERR as requested by the parity gate.
+The first version of this probe was settings-specific and also averaged the
+health endpoint into the FastAPI number.  Page two needs a real API probe, so
+the targets now live in a registry.  A run always exercises both registered
+pages; ``--page`` is retained as the gate-facing selector and is validated so
+that a typo cannot silently produce a partial parity result.
 
-Usage:
-    python scripts/parity_perf.py
+The script deliberately uses only the Python standard library.  Human-readable
+individual timings go to STDOUT and the one-line machine-readable contract is
+written to STDERR:
+
+    perf_ms: settings_FastAPI=Xms settings_React=Yms settings_Streamlit=Zms history_FastAPI=Xms history_React=Yms history_Streamlit=Zms
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from dataclasses import dataclass
@@ -22,7 +26,8 @@ from urllib.request import Request, urlopen
 
 @dataclass(frozen=True)
 class ProbeResult:
-    name: str
+    page: str
+    target: str
     url: str
     elapsed_ms: float
     status: int | None
@@ -30,27 +35,38 @@ class ProbeResult:
 
 
 TIMEOUT_SECONDS = 10.0
-PROBES = (
-    ("FastAPI settings", "http://localhost:8000/api/settings"),
-    ("FastAPI health", "http://localhost:8000/api/health"),
-    ("React", "http://localhost:5173/"),
-    ("Streamlit", "http://localhost:8501/"),
-)
+PROBE_TARGETS = ("FastAPI", "React", "Streamlit")
+
+# Keep this registry in the same shape as parity_visual.py: adding a page is a
+# single entry, rather than another set of hard-coded branches in this script.
+PAGE_REGISTRY: dict[str, dict[str, str]] = {
+    "settings": {
+        "FastAPI": "http://localhost:8000/api/settings",
+        "React": "http://localhost:5173/settings",
+        "Streamlit": "http://localhost:8501/settings",
+    },
+    "history": {
+        "FastAPI": "http://127.0.0.1:8000/api/history",
+        "React": "http://localhost:5173/history",
+        "Streamlit": "http://localhost:8501/history",
+    },
+}
 
 
-def _probe(name: str, url: str) -> ProbeResult:
-    request = Request(url, method="GET", headers={"User-Agent": "parity-perf/1"})
+def _probe(page: str, target: str, url: str) -> ProbeResult:
+    request = Request(url, method="GET", headers={"User-Agent": "parity-perf/2"})
     started = time.perf_counter()
     try:
         with urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-            # Consume the body so the measured request includes the response
-            # transfer, not just the socket/header round-trip.
+            # Consume the body so the measured request includes transfer time,
+            # not only the socket/header round-trip.
             response.read()
             status = int(response.status)
-        return ProbeResult(name, url, (time.perf_counter() - started) * 1000, status)
+        return ProbeResult(page, target, url, (time.perf_counter() - started) * 1000, status)
     except (OSError, URLError, TimeoutError) as exc:
         return ProbeResult(
-            name,
+            page,
+            target,
             url,
             (time.perf_counter() - started) * 1000,
             None,
@@ -58,39 +74,45 @@ def _probe(name: str, url: str) -> ProbeResult:
         )
 
 
-def _format_ms(value: float | None) -> str:
-    return "N/A" if value is None else f"{value:.2f}ms"
+def _format_ms(result: ProbeResult) -> str:
+    return "N/A" if result.status is None else f"{result.elapsed_ms:.2f}ms"
 
 
 def main() -> int:
-    results = [_probe(name, url) for name, url in PROBES]
-    by_name = {result.name: result for result in results}
-
-    for result in results:
-        status = str(result.status) if result.status is not None else "ERR"
-        suffix = f" ({result.error})" if result.error else ""
-        print(f"{result.name:16} {status:>3} {_format_ms(result.elapsed_ms)}{suffix}")
-
-    settings = by_name["FastAPI settings"]
-    health = by_name["FastAPI health"]
-    react = by_name["React"]
-    streamlit = by_name["Streamlit"]
-
-    # The gate has one FastAPI slot but asks us to exercise two FastAPI routes.
-    # Report their mean latency in that slot and print individual timings above.
-    fastapi_ms: float | None = None
-    if settings.status is not None and health.status is not None:
-        fastapi_ms = (settings.elapsed_ms + health.elapsed_ms) / 2
-
-    print(
-        "perf_ms: "
-        f"FastAPI={_format_ms(fastapi_ms)} "
-        f"React={_format_ms(react.elapsed_ms if react.status is not None else None)} "
-        f"Streamlit={_format_ms(streamlit.elapsed_ms if streamlit.status is not None else None)}",
-        file=sys.stderr,
+    parser = argparse.ArgumentParser(description="Per-page parity performance probe")
+    parser.add_argument(
+        "--page",
+        default=None,
+        help="Gate-facing page key (settings or history); both pages are always probed",
     )
+    args = parser.parse_args()
+    if args.page is not None and args.page not in PAGE_REGISTRY:
+        supported = ", ".join(sorted(PAGE_REGISTRY))
+        print(f"unsupported --page {args.page!r} (supported: {supported})", file=sys.stderr)
+        return 1
 
-    return 0 if all(result.status is not None and result.status < 500 for result in results) else 1
+    results: dict[str, dict[str, ProbeResult]] = {}
+    for page, targets in PAGE_REGISTRY.items():
+        results[page] = {}
+        for target in PROBE_TARGETS:
+            result = _probe(page, target, targets[target])
+            results[page][target] = result
+            status = str(result.status) if result.status is not None else "ERR"
+            suffix = f" ({result.error})" if result.error else ""
+            print(f"{page:8} {target:9} {status:>3} {_format_ms(result)}{suffix}")
+
+    fields: list[str] = []
+    for page in PAGE_REGISTRY:
+        for target in PROBE_TARGETS:
+            result = results[page][target]
+            fields.append(f"{page}_{target}={_format_ms(result)}")
+    print("perf_ms: " + " ".join(fields), file=sys.stderr)
+
+    return 0 if all(
+        result.status is not None and result.status < 500
+        for page_results in results.values()
+        for result in page_results.values()
+    ) else 1
 
 
 if __name__ == "__main__":

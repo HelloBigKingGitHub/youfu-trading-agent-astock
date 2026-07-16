@@ -3,6 +3,7 @@ import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { HistoryPage } from '@/pages/HistoryPage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 
 function Layout({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle?: string }) {
@@ -60,8 +61,8 @@ const router = createBrowserRouter([
   {
     path: '/history',
     element: (
-      <Layout title="历史报告" subtitle="历史分析记录查询">
-        <PlaceholderPage title="历史" icon="📋" phase="Phase 2.2" description="历史报告查询 + 详情" />
+      <Layout title="📋 历史报告" subtitle="历史分析记录查询 · 详情 · 重跑 · 删除">
+        <HistoryPage />
       </Layout>
     ),
   },

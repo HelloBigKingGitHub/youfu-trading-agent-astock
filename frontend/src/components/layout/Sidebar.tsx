@@ -18,7 +18,7 @@ export const NAV_ENTRIES: NavEntry[] = [
   { to: '/batch',    icon: '📊', label: '批量',   phase: 'Phase 2.4', enabled: false },
   { to: '/sector',   icon: '📈', label: '板块',   phase: 'Phase 2.5', enabled: false },
   { to: '/portfolio',icon: '💼', label: '仓位',   phase: 'Phase 2.6', enabled: false },
-  { to: '/history',  icon: '📋', label: '历史',   phase: 'Phase 2.2', enabled: false },
+  { to: '/history',  icon: '📋', label: '历史',   phase: 'Phase 2.2 ✅', enabled: true  },
   { to: '/logs',     icon: '📋', label: '日志',   phase: 'Phase 2.3', enabled: false },
   { to: '/chart',    icon: '📈', label: '走势',   phase: 'Phase 2.7', enabled: false },
   { to: '/schedule', icon: '⏰', label: '定时',   phase: 'Phase 2.8', enabled: false },
