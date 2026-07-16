@@ -111,7 +111,7 @@ export function SettingsPage() {
     <form
       onSubmit={handleSubmit}
       data-testid="settings-form"
-      className="space-y-6 max-w-3xl"
+      className="mx-auto w-full max-w-3xl space-y-8"
     >
       <ApiKeyBanner settings={data.settings} />
       <Card>
@@ -119,8 +119,8 @@ export function SettingsPage() {
           <CardTitle>🤖 模型配置</CardTitle>
           <CardDescription>选择 LLM 供应商和模型组合</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
+        <CardContent className="space-y-6">
+          <div>
             <Label htmlFor="provider">LLM 供应商</Label>
             <Select
               id="provider"
@@ -144,8 +144,8 @@ export function SettingsPage() {
             </Select>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+            <div>
               <Label htmlFor="deep">深度模型</Label>
               <Select
                 id="deep"
@@ -160,7 +160,7 @@ export function SettingsPage() {
                 ))}
               </Select>
             </div>
-            <div className="space-y-2">
+            <div>
               <Label htmlFor="quick">快速模型</Label>
               <Select
                 id="quick"
@@ -179,7 +179,7 @@ export function SettingsPage() {
 
           <Separator />
 
-          <div className="space-y-2">
+          <div>
             <Label htmlFor="baseUrl">Base URL (可选, 走自定义网关时填)</Label>
             <Input
               id="baseUrl"
@@ -190,7 +190,7 @@ export function SettingsPage() {
             />
           </div>
         </CardContent>
-        <CardFooter className="flex justify-between">
+        <CardFooter className="flex justify-between gap-4">
           <Button type="button" variant="outline" onClick={handleReset} disabled={saveMutation.isPending}>
             重置
           </Button>

@@ -20,7 +20,7 @@ export const Alert = React.forwardRef<HTMLDivElement, AlertProps>(
     <div
       ref={ref}
       role="alert"
-      className={cn('relative w-full rounded-lg border p-4 [&>svg~*]:pl-7 [&>svg+div]:translate-y-[-3px]', VARIANT[variant], className)}
+      className={cn('relative w-full rounded-lg border p-5 [&>svg~*]:pl-7 [&>svg+div]:translate-y-[-3px]', VARIANT[variant], className)}
       {...props}
     />
   )
@@ -29,14 +29,14 @@ Alert.displayName = 'Alert';
 
 export const AlertTitle = React.forwardRef<HTMLHeadingElement, React.HTMLAttributes<HTMLHeadingElement>>(
   ({ className, ...props }, ref) => (
-    <h5 ref={ref} className={cn('mb-1 font-medium leading-none tracking-tight', className)} {...props} />
+    <h5 ref={ref} className={cn('mb-1.5 text-base font-semibold leading-snug tracking-tight', className)} {...props} />
   )
 );
 AlertTitle.displayName = 'AlertTitle';
 
 export const AlertDescription = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HTMLParagraphElement>>(
   ({ className, ...props }, ref) => (
-    <div ref={ref} className={cn('text-sm [&_p]:leading-relaxed', className)} {...props} />
+    <div ref={ref} className={cn('text-base leading-relaxed [&_p]:leading-relaxed', className)} {...props} />
   )
 );
 AlertDescription.displayName = 'AlertDescription';
