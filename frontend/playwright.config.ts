@@ -21,6 +21,7 @@ export default defineConfig({
   ],
   use: {
     baseURL: 'http://localhost:5173',
+    viewport: { width: 1600, height: 900 },
     trace: 'retain-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
