@@ -95,6 +95,14 @@ PAGE_REGISTRY: dict[str, dict[str, object]] = {
         "out_streamlit": Path("/tmp/streamlit_portfolio_page.png"),
         "out_diff": Path("/tmp/portfolio_visual_diff.png"),
     },
+    "schedule": {
+        "react_url": "http://localhost:5173/schedule",
+        "streamlit_url": "http://localhost:8501/schedule",
+        "streamlit_button": "定时",
+        "out_react": Path("/tmp/react_schedule_page.png"),
+        "out_streamlit": Path("/tmp/streamlit_schedule_page.png"),
+        "out_diff": Path("/tmp/schedule_visual_diff.png"),
+    },
 }
 
 
@@ -428,6 +436,27 @@ PAGE_STRUCTURAL: dict[str, dict[str, object]] = {
             "transactions": [["日期", "流水"], ["买入", "卖出"]],
             "allocation": [["按行业", "按板块"], ["按资产类别", "集中度"]],
             "risk": [["XIRR", "Sharpe"], ["MaxDD", "Brinson"]],
+        },
+    },
+    "schedule": {
+        "label": "schedule page",
+        "selector_kind_react": "schedule_page",
+        "regions": {
+            # Phase 2.8 — schedule + ticker 源 + 多渠道通知.  Both React
+            # SchedulePage (5 tabs: list/detail/form/runs/notifier) and
+            # Streamlit ``web/components/schedule_panel.py`` consume the same
+            # backend.core.scheduler + watchlist singletons.  We assert the
+            # 5 functional regions that both surfaces expose:
+            #   1. identity — emoji + 中文标题 + 关键词
+            #   2. schedule_list — 总览 tab 表格 (name / cron / source / 启用 / last_run)
+            #   3. schedule_detail — 详情 tab (last_run_status / 下次运行)
+            #   4. schedule_form — 创建/编辑表单 (cron / ticker 源 / 通知渠道)
+            #   5. notifier — 通知配置 tab (WeCom / Email / Desktop / Log)
+            "identity": ["⏰", "定时", "schedule"],
+            "schedule_list": [["名称", "Cron"], ["启用", "下次运行"]],
+            "schedule_detail": [["上次运行", "状态"], ["next_run", "下次运行"]],
+            "schedule_form": [["Cron", "cron"], ["ticker", "Ticker"], ["通知", "notify"]],
+            "notifier": [["WeCom", "Email"], ["Desktop", "Log"]],
         },
     },
 }

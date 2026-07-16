@@ -20,6 +20,7 @@ from backend.api.logs import router as logs_router  # noqa: E402
 from backend.api.chart import router as chart_router  # noqa: E402
 from backend.api.sector import router as sector_router  # noqa: E402
 from backend.api.portfolio import router as portfolio_router  # noqa: E402
+from backend.api.schedule import router as schedule_router  # noqa: E402
 
 app = FastAPI(
     title="TradingAgents-Astock API",
@@ -55,6 +56,7 @@ app.include_router(logs_router, prefix="/api")
 app.include_router(chart_router, prefix="/api")
 app.include_router(sector_router, prefix="/api")
 app.include_router(portfolio_router, prefix="/api")
+app.include_router(schedule_router, prefix="/api")
 
 
 @app.get("/api/health")

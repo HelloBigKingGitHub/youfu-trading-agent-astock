@@ -444,9 +444,56 @@ def _check_portfolio() -> int:
     return 0
 
 
+def _check_schedule() -> int:
+    """Phase 2.8 schedule page — hash the canonical /api/schedule/list + /api/schedule/watchlist payloads.
+
+    Both the React SchedulePage (5 tabs) and the Streamlit
+    ``web/components/schedule_panel.py`` consume the same backend
+    ``backend.core.scheduler`` + ``watchlist`` singletons, so the JSON bytes
+    are guaranteed identical → hash equality proves parity at the data level.
+    We canonicalise by stripping volatile fields (``fetched_at`` floats that
+    drift between snapshots) so the hash is stable across runs.
+    """
+    canonical_parts: list[dict] = []
+    counts: dict[str, int] = {}
+
+    for endpoint in ("/api/schedule/list", "/api/schedule/watchlist"):
+        url = f"http://127.0.0.1:8000{endpoint}"
+        try:
+            request = Request(url, headers={"User-Agent": "parity-check/2.8"})
+            with urlopen(request, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            print(f"schedule {endpoint} failed: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(payload, dict):
+            print(f"schedule {endpoint} returned non-dict", file=sys.stderr)
+            return 1
+
+        # Strip volatile fields for stable parity hash.
+        VOLATILE_KEYS = {"fetched_at"}
+        cleaned = {k: v for k, v in payload.items() if k not in VOLATILE_KEYS}
+        canonical_parts.append({"endpoint": endpoint, **cleaned})
+        counts[endpoint] = payload.get("count", 0)
+
+    canonical = json.dumps(
+        canonical_parts,
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.md5(canonical).hexdigest()
+
+    total = sum(counts.values())
+    print(f"schedule list     : {counts.get('/api/schedule/list', 0)}")
+    print(f"schedule watchlist: {counts.get('/api/schedule/watchlist', 0)}")
+    print(f"md5(canonical)    : {digest}")
+    print(f"data_hash_schedule: {digest}", file=sys.stderr)
+    print(f"data_count_schedule: {total}", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Parity check — data hash per page")
-    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), 'chart' (P2.4), 'sector' (P2.5), 'batch' (P2.6), or 'portfolio' (P2.7)")
+    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), 'chart' (P2.4), 'sector' (P2.5), 'batch' (P2.6), 'portfolio' (P2.7), or 'schedule' (P2.8)")
     args = parser.parse_args()
 
     if args.page == "settings":
@@ -463,9 +510,11 @@ def main() -> int:
         return _check_batch()
     if args.page == "portfolio":
         return _check_portfolio()
+    if args.page == "schedule":
+        return _check_schedule()
 
     print(
-        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart', 'sector', 'batch', 'portfolio')",
+        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart', 'sector', 'batch', 'portfolio', 'schedule')",
         file=sys.stderr,
     )
     return 1

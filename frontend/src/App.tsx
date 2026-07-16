@@ -9,6 +9,7 @@ import ChartPage from '@/pages/ChartPage';
 import SectorPage from '@/pages/SectorPage';
 import BatchPage from '@/pages/BatchPage';
 import PortfolioPage from '@/pages/PortfolioPage';
+import SchedulePage from '@/pages/SchedulePage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 
 function Layout({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle?: string }) {
@@ -91,7 +92,7 @@ const router = createBrowserRouter([
     path: '/schedule',
     element: (
       <Layout title="定时分析" subtitle="Cron 调度 + 多渠道通知">
-        <PlaceholderPage title="定时分析" icon="⏰" phase="Phase 2.8" description="定时分析 + 通知 (WeCom / Email / Desktop)" />
+        <SchedulePage />
       </Layout>
     ),
   },

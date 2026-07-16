@@ -15,6 +15,8 @@ Machine-readable STDERR summaries:
     fault_diff_chart: ...
     fault_diff_sector: ...
     fault_diff_batch: ...
+    fault_diff_portfolio: ...
+    fault_diff_schedule: ...
 """
 
 from __future__ import annotations
@@ -107,6 +109,18 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "fault_url": "http://127.0.0.1:8000/api/portfolio/import/detect",
         "fault_kind": "portfolio",
     },
+    "schedule": {
+        "react_url": "http://localhost:5173/schedule",
+        "streamlit_url": "http://localhost:8501/schedule",
+        # POST /api/schedule/create with an invalid cron expression
+        # (``cron_expr="not a cron"``) → backend.core.scheduler._validate_cron
+        # raises ValueError → FastAPI surfaces HTTP 422.  Mirrors the batch
+        # ``BATCH_INVALID_PAYLOAD`` contract: deterministic 422 without
+        # creating any Schedule (the validator runs before persistence).
+        "fault_method": "POST",
+        "fault_url": "http://127.0.0.1:8000/api/schedule/create",
+        "fault_kind": "schedule",
+    },
 }
 
 # Batch fault payload: send a JSON string instead of an array. Pydantic
@@ -115,11 +129,23 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
 # queue slots).
 BATCH_INVALID_PAYLOAD: Any = "not-a-list-of-items"
 
+# Schedule fault payload: send a malformed cron expression.  The
+# backend.core.scheduler ``_validate_cron`` raises ValueError before any
+# Schedule is persisted, so the API returns HTTP 422 deterministically.  The
+# rest of the body is valid so the validation surface isolates the cron check.
+SCHEDULE_INVALID_PAYLOAD: dict[str, Any] = {
+    "name": "fault-injection",
+    "cron_expr": "not a cron",
+    "source_type": "manual",
+    "source_config": {"tickers": ["600595"]},
+    "notify_channels": ["log"],
+}
+
 # Keep the regex intentionally small and UI-oriented.  The fallback marker is
 # useful because the initial HTML of an SPA often contains no rendered error.
 ERROR_MARKERS = re.compile(
-    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|加载热力图失败|加载选股热度失败|加载概念板块失败|加载涨停归因失败|加载 4 段式报告失败|加载4段式报告失败|加载持仓失败|加载流水失败|加载配置失败|加载业绩归因失败|加载预警规则失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|板块轮动|涨停|无概念板块|保存失败|请求失败|批量分析失败|批量提交失败|bulk analysis failed|提交失败|错误|Error|error|Invalid|invalid|"
-    r"仓位|portfolio|Validation|validation|Exception|exception|Traceback|traceback|404|422|502)",
+    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|加载热力图失败|加载选股热度失败|加载概念板块失败|加载涨停归因失败|加载 4 段式报告失败|加载4段式报告失败|加载持仓失败|加载流水失败|加载配置失败|加载业绩归因失败|加载预警规则失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|板块轮动|涨停|无概念板块|保存失败|请求失败|批量分析失败|批量提交失败|bulk analysis failed|提交失败|加载定时失败|错误|Error|error|Invalid|invalid|"
+    r"仓位|portfolio|定时|schedule|Validation|validation|Exception|exception|Traceback|traceback|404|422|502)",
     re.IGNORECASE,
 )
 TAG_RE = re.compile(r"<[^>]+>")
@@ -176,9 +202,12 @@ def _api_fault(page: str, cfg: dict[str, str]) -> tuple[int | None, str]:
         with bad types: e.g. ``deepModel`` is a dict instead of a string).
       * ``batch`` → ``POST /api/batch`` with ``BATCH_INVALID_PAYLOAD`` (a JSON
         string body instead of a list of items — Pydantic ``list_type``).
-      * ``history`` / ``logs`` / ``chart`` / ``sector`` → ``GET`` with bad
-        query params (``limit=invalid``, ``ticker=INVALID_TICKER_NONEXIST``,
-        ``top_n=abc``).
+      * ``schedule`` → ``POST /api/schedule/create`` with
+        ``SCHEDULE_INVALID_PAYLOAD`` (cron_expr="not a cron" — backend
+        ``_validate_cron`` raises ValueError → HTTP 422).
+      * ``history`` / ``logs`` / ``chart`` / ``sector`` / ``portfolio`` → ``GET``
+        with bad query params (``limit=invalid``, ``ticker=INVALID_TICKER_NONEXIST``,
+        ``top_n=abc``, ``/api/portfolio/import/detect`` missing file_path).
     """
     try:
         method = cfg["fault_method"]
@@ -196,21 +225,33 @@ def _api_fault(page: str, cfg: dict[str, str]) -> tuple[int | None, str]:
                 headers={"User-Agent": "parity-fault-inject/2"},
             )
         elif method == "POST":
-            # Batch fault: send a JSON string body instead of a list.  Using
-            # ``data`` (raw bytes) keeps the request body a string so
-            # FastAPI/Pydantic rejects it with ``list_type`` 422 — passing
-            # ``json=BATCH_INVALID_PAYLOAD`` would JSON-encode the string
-            # (still rejected, but the body shape differs and the validator
-            # type changes).  ``data=...`` is the deterministic path.
-            response = requests.post(
-                cfg["fault_url"],
-                data=BATCH_INVALID_PAYLOAD.encode("utf-8"),
-                headers={
-                    "User-Agent": "parity-fault-inject/2",
-                    "Content-Type": "application/json",
-                },
-                timeout=TIMEOUT_SECONDS,
-            )
+            if page == "schedule":
+                # Schedule fault: send a JSON body with a malformed cron_expr.
+                # The backend ``_validate_cron`` raises ValueError before any
+                # Schedule is persisted, so the API returns HTTP 422
+                # deterministically.
+                response = requests.post(
+                    cfg["fault_url"],
+                    json=SCHEDULE_INVALID_PAYLOAD,
+                    timeout=TIMEOUT_SECONDS,
+                    headers={"User-Agent": "parity-fault-inject/2"},
+                )
+            else:
+                # Batch fault: send a JSON string body instead of a list.  Using
+                # ``data`` (raw bytes) keeps the request body a string so
+                # FastAPI/Pydantic rejects it with ``list_type`` 422 — passing
+                # ``json=BATCH_INVALID_PAYLOAD`` would JSON-encode the string
+                # (still rejected, but the body shape differs and the validator
+                # type changes).  ``data=...`` is the deterministic path.
+                response = requests.post(
+                    cfg["fault_url"],
+                    data=BATCH_INVALID_PAYLOAD.encode("utf-8"),
+                    headers={
+                        "User-Agent": "parity-fault-inject/2",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=TIMEOUT_SECONDS,
+                )
         else:  # pragma: no cover - guard for unknown methods
             return None, f"unsupported fault_method {method!r}"
         return response.status_code, response.text[:240].replace("\n", " ")
@@ -364,9 +405,39 @@ const [reactUrl, streamlitUrl, pageKey, executablePath] = process.argv.slice(3);
         });
       });
     }
+    if (pageKey === 'schedule' && label === 'react') {
+      // Intercept POST /api/schedule/create so React's SchedulePage reliably
+      // surfaces the destructive error banner (schedule-form-error) on first
+      // paint — analogous to the batch/sector/chart pattern.  The /schedule
+      // URL alone would land on a healthy list page (no auto-submit), so
+      // without this route the React default render would never call the
+      // POST endpoint and the form-error banner would never appear.
+      await page.route(url => {
+        try {
+          const parsed = new URL(String(url));
+          return parsed.hostname === 'localhost'
+            && parsed.pathname === '/api/schedule/create';
+        } catch (_) {
+          return false;
+        }
+      }, async route => {
+        await route.fulfill({
+          status: 422,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            detail: [{
+              type: 'value_error',
+              loc: ['body', 'cron_expr'],
+              msg: 'invalid cron expression: not a cron',
+              input: 'not a cron',
+            }],
+          }),
+        });
+      });
+    }
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForTimeout(1500);
-    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [data-testid="chart-kline-error"], [data-testid="chart-empty"], [data-testid="sector-heatmap-error"], [data-testid="sector-top-stocks-error"], [data-testid="sector-concepts-error"], [data-testid="sector-limit-up-error"], [data-testid="sector-digest-error"], [data-testid="batch-submit-error"], [role="alert"]');
+    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [data-testid="chart-kline-error"], [data-testid="chart-empty"], [data-testid="sector-heatmap-error"], [data-testid="sector-top-stocks-error"], [data-testid="sector-concepts-error"], [data-testid="sector-limit-up-error"], [data-testid="sector-digest-error"], [data-testid="batch-submit-error"], [data-testid="schedule-form-error"], [role="alert"]');
     let text = '';
     if (await errorLocator.count()) text = await errorLocator.first().innerText();
     if (!text) text = await page.locator('body').innerText();
@@ -441,6 +512,8 @@ _FAULT_MARKERS = {
     "chart": "fault_diff_chart",
     "sector": "fault_diff_sector",
     "batch": "fault_diff_batch",
+    "portfolio": "fault_diff_portfolio",
+    "schedule": "fault_diff_schedule",
 }
 
 
