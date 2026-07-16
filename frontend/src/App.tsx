@@ -6,6 +6,7 @@ import { SettingsPage } from '@/pages/SettingsPage';
 import { HistoryPage } from '@/pages/HistoryPage';
 import { LogsPage } from '@/pages/LogsPage';
 import ChartPage from '@/pages/ChartPage';
+import SectorPage from '@/pages/SectorPage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 
 function Layout({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle?: string }) {
@@ -47,8 +48,8 @@ const router = createBrowserRouter([
   {
     path: '/sector',
     element: (
-      <Layout title="板块轮动" subtitle="每日板块行情 + 选股热度">
-        <PlaceholderPage title="板块轮动" icon="📈" phase="Phase 2.5" description="板块轮动日报 + 资金流" />
+      <Layout title="📈 板块轮动" subtitle="每日板块行情 + 选股热度 + 涨停归因">
+        <SectorPage />
       </Layout>
     ),
   },

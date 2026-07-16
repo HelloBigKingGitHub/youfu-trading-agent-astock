@@ -71,6 +71,14 @@ PAGE_REGISTRY: dict[str, dict[str, object]] = {
         "out_streamlit": Path("/tmp/streamlit_chart_page.png"),
         "out_diff": Path("/tmp/chart_visual_diff.png"),
     },
+    "sector": {
+        "react_url": "http://localhost:5173/sector",
+        "streamlit_url": "http://localhost:8501/sector",
+        "streamlit_button": "板块",
+        "out_react": Path("/tmp/react_sector_page.png"),
+        "out_streamlit": Path("/tmp/streamlit_sector_page.png"),
+        "out_diff": Path("/tmp/sector_visual_diff.png"),
+    },
 }
 
 
@@ -338,6 +346,30 @@ PAGE_STRUCTURAL: dict[str, dict[str, object]] = {
             "range_buttons": [["1d"], ["1w"], ["1m"], ["3m"], ["6m"], ["1y"], ["all"]],
             "quote_banner": [["实时报价"], ["现价"], ["涨跌幅"]],
             "chart_canvas": [["K线图"], ["数据来源"]],
+        },
+    },
+    "sector": {
+        "label": "sector page",
+        "selector_kind_react": "sector_page",
+        "regions": {
+            # Phase 2.5 — sector rotation digest.  Both React SectorPage and
+            # Streamlit ``web/components/sector_panel.py`` consume the same
+            # ``get_sector_rotation_digest`` business layer (zero LLM tokens),
+            # so the visible vocabulary should overlap on every section.  The
+            # React side renders 5 tabs (heatmap/top_stocks/concepts/limit_up/
+            # digest) while the Streamlit side uses 1 header + 1 expander
+            # pattern; we therefore test the *content tokens* that both
+            # surfaces actually emit, NOT the React tab labels.  Each region
+            # is AND across its token-list (a token-list matches if ANY
+            # token is found), so a single region can offer alternative
+            # spellings ("选股" OR "机构选股") by listing them inside the
+            # same inner array.
+            "identity": ["📈", "板块"],
+            "heatmap": [["概念板块", "板块涨幅"]],
+            "top_stocks": [["选股", "机构选股"]],
+            "concepts": [["概念板块", "板块涨幅"]],
+            "limit_up": [["涨停", "板块涨幅"]],
+            "digest": [["板块轮动", "数据源"]],
         },
     },
 }

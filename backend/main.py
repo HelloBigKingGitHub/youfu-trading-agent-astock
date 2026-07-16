@@ -18,6 +18,7 @@ from backend.api import analyze_router, progress_router, result_router, history_
 from backend.api.settings import router as settings_router  # noqa: E402
 from backend.api.logs import router as logs_router  # noqa: E402
 from backend.api.chart import router as chart_router  # noqa: E402
+from backend.api.sector import router as sector_router  # noqa: E402
 
 app = FastAPI(
     title="TradingAgents-Astock API",
@@ -51,6 +52,7 @@ app.include_router(batch_router)
 app.include_router(settings_router, prefix="/api")
 app.include_router(logs_router, prefix="/api")
 app.include_router(chart_router, prefix="/api")
+app.include_router(sector_router, prefix="/api")
 
 
 @app.get("/api/health")

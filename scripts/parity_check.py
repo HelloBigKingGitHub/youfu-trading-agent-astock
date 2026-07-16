@@ -239,9 +239,59 @@ def _check_chart() -> int:
     return 0
 
 
+def _check_sector() -> int:
+    """Phase 2.5 sector page — hash the canonical API digest Markdown.
+
+    The endpoint returns a pre-rendered 4-section Markdown digest (no LLM
+    involved); the React SectorPage feeds it into a monospace block. Both
+    UIs ultimately read from the same ``get_sector_rotation_digest`` business
+    layer call, so the Markdown bytes are guaranteed identical → hash equality
+    proves parity at the data level.
+    """
+    url = "http://127.0.0.1:8000/api/sector/digest?top_n=20"
+    try:
+        request = Request(url, headers={"User-Agent": "parity-check/2.5"})
+        with urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"sector endpoint failed: {exc}", file=sys.stderr)
+        return 1
+
+    if not isinstance(payload, dict):
+        print("sector endpoint returned non-dict", file=sys.stderr)
+        return 1
+
+    markdown = payload.get("markdown") or ""
+    if not markdown:
+        print("sector endpoint returned empty markdown", file=sys.stderr)
+        return 1
+
+    # Canonical bytes: markdown + counters. Sort keys for byte stability.
+    canonical_payload = {
+        "markdown": markdown,
+        "hot_strategies_count": payload.get("hot_strategies_count", 0),
+        "hot_stocks_count": payload.get("hot_stocks_count", 0),
+        "concept_blocks_count": payload.get("concept_blocks_count", 0),
+    }
+    canonical = json.dumps(
+        canonical_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    digest = hashlib.md5(canonical).hexdigest()
+    sources_ok = payload.get("sources_ok") or {}
+    ok_count = sum(1 for v in sources_ok.values() if v)
+
+    print(f"sector endpoint : {url}")
+    print(f"sector markdown : {len(markdown)} chars")
+    print(f"sector sources  : {ok_count}/{len(sources_ok)} OK")
+    print(f"md5(canonical)  : {digest}")
+    print(f"data_hash_sector: {digest}", file=sys.stderr)
+    print(f"data_count_sector: {len(markdown)}", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Parity check — data hash per page")
-    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), or 'chart' (P2.4)")
+    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), 'chart' (P2.4), or 'sector' (P2.5)")
     args = parser.parse_args()
 
     if args.page == "settings":
@@ -252,9 +302,11 @@ def main() -> int:
         return _check_logs()
     if args.page == "chart":
         return _check_chart()
+    if args.page == "sector":
+        return _check_sector()
 
     print(
-        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart')",
+        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart', 'sector')",
         file=sys.stderr,
     )
     return 1

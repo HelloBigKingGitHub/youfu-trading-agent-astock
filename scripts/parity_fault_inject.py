@@ -13,6 +13,7 @@ Machine-readable STDERR summaries:
     fault_diff_history: ...
     fault_diff_logs: ...
     fault_diff_chart: ...
+    fault_diff_sector: ...
 """
 
 from __future__ import annotations
@@ -69,12 +70,24 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "fault_url": "http://127.0.0.1:8000/api/chart/kline?ticker=999999&range=6m",
         "fault_kind": "chart",
     },
+    "sector": {
+        "react_url": "http://localhost:5173/sector",
+        "streamlit_url": "http://localhost:8501/sector",
+        # top_n=abc bypasses the custom validator and lands on Pydantic's
+        # int_parsing → HTTP 422, mirroring the history `limit=invalid`
+        # contract. (top_n=999 would also fail but with HTTP 400 via the
+        # custom [_validate_top_n] check, which doesn't match the 422
+        # spec.)
+        "fault_method": "GET",
+        "fault_url": "http://127.0.0.1:8000/api/sector/digest?top_n=abc",
+        "fault_kind": "sector",
+    },
 }
 
 # Keep the regex intentionally small and UI-oriented.  The fallback marker is
 # useful because the initial HTML of an SPA often contains no rendered error.
 ERROR_MARKERS = re.compile(
-    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|保存失败|请求失败|错误|Error|error|Invalid|invalid|"
+    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|加载热力图失败|加载选股热度失败|加载概念板块失败|加载涨停归因失败|加载 4 段式报告失败|加载4段式报告失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|板块轮动|涨停|无概念板块|保存失败|请求失败|错误|Error|error|Invalid|invalid|"
     r"Validation|validation|Exception|exception|Traceback|traceback|404|422|502)",
     re.IGNORECASE,
 )
@@ -223,9 +236,41 @@ const [reactUrl, streamlitUrl, pageKey, executablePath] = process.argv.slice(3);
         });
       });
     }
+    if (pageKey === 'sector' && label === 'react') {
+      // Intercept BOTH /api/sector/heatmap (default tab on page load) and
+      // /api/sector/digest so React's SectorPage reliably surfaces the
+      // destructive error banner (sector-heatmap-error / sector-digest-error)
+      // on first paint.  The /sector URL alone would land on the live
+      // (cache-warm) digest, so without this route the React default tab
+      // would render the happy path instead of the error banner — exactly
+      // the pattern chart uses for chart-kline-error.
+      await page.route(url => {
+        try {
+          const parsed = new URL(String(url));
+          return parsed.hostname === 'localhost'
+            && (parsed.pathname === '/api/sector/heatmap'
+                || parsed.pathname === '/api/sector/digest');
+        } catch (_) {
+          return false;
+        }
+      }, async route => {
+        await route.fulfill({
+          status: 422,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            detail: [{
+              loc: ['query', 'top_n'],
+              msg: 'Input should be a valid integer, unable to parse string as an integer',
+              type: 'int_parsing',
+              input: 'abc',
+            }],
+          }),
+        });
+      });
+    }
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForTimeout(1500);
-    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [data-testid="chart-kline-error"], [data-testid="chart-empty"], [role="alert"]');
+    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [data-testid="chart-kline-error"], [data-testid="chart-empty"], [data-testid="sector-heatmap-error"], [data-testid="sector-top-stocks-error"], [data-testid="sector-concepts-error"], [data-testid="sector-limit-up-error"], [data-testid="sector-digest-error"], [role="alert"]');
     let text = '';
     if (await errorLocator.count()) text = await errorLocator.first().innerText();
     if (!text) text = await page.locator('body').innerText();
@@ -298,6 +343,7 @@ _FAULT_MARKERS = {
     "history": "fault_diff_history",
     "logs": "fault_diff_logs",
     "chart": "fault_diff_chart",
+    "sector": "fault_diff_sector",
 }
 
 
