@@ -94,6 +94,19 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "fault_url": "http://127.0.0.1:8000/api/batch?dedupe=false",
         "fault_kind": "batch",
     },
+    "portfolio": {
+        "react_url": "http://localhost:5173/portfolio",
+        "streamlit_url": "http://localhost:8501/portfolio",
+        # GET /api/portfolio/import/detect WITHOUT the required ``file_path``
+        # query param → FastAPI returns HTTP 422 with a Pydantic
+        # ``missing_query_parameter`` validation error.  Mirrors the
+        # history/chart ``limit=invalid`` contract: deterministic 422 without
+        # touching any business state.  Cleanest deterministic 422 path on a
+        # plain GET endpoint with no int query params to corrupt.
+        "fault_method": "GET",
+        "fault_url": "http://127.0.0.1:8000/api/portfolio/import/detect",
+        "fault_kind": "portfolio",
+    },
 }
 
 # Batch fault payload: send a JSON string instead of an array. Pydantic
@@ -105,8 +118,8 @@ BATCH_INVALID_PAYLOAD: Any = "not-a-list-of-items"
 # Keep the regex intentionally small and UI-oriented.  The fallback marker is
 # useful because the initial HTML of an SPA often contains no rendered error.
 ERROR_MARKERS = re.compile(
-    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|加载热力图失败|加载选股热度失败|加载概念板块失败|加载涨停归因失败|加载 4 段式报告失败|加载4段式报告失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|板块轮动|涨停|无概念板块|保存失败|请求失败|批量分析失败|批量提交失败|bulk analysis failed|提交失败|错误|Error|error|Invalid|invalid|"
-    r"Validation|validation|Exception|exception|Traceback|traceback|404|422|502)",
+    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|加载热力图失败|加载选股热度失败|加载概念板块失败|加载涨停归因失败|加载 4 段式报告失败|加载4段式报告失败|加载持仓失败|加载流水失败|加载配置失败|加载业绩归因失败|加载预警规则失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|板块轮动|涨停|无概念板块|保存失败|请求失败|批量分析失败|批量提交失败|bulk analysis failed|提交失败|错误|Error|error|Invalid|invalid|"
+    r"仓位|portfolio|Validation|validation|Exception|exception|Traceback|traceback|404|422|502)",
     re.IGNORECASE,
 )
 TAG_RE = re.compile(r"<[^>]+>")

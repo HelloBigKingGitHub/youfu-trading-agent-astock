@@ -8,6 +8,7 @@ import { LogsPage } from '@/pages/LogsPage';
 import ChartPage from '@/pages/ChartPage';
 import SectorPage from '@/pages/SectorPage';
 import BatchPage from '@/pages/BatchPage';
+import PortfolioPage from '@/pages/PortfolioPage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 
 function Layout({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle?: string }) {
@@ -58,7 +59,7 @@ const router = createBrowserRouter([
     path: '/portfolio',
     element: (
       <Layout title="我的仓位" subtitle="持仓 + 业绩归因 + 预警">
-        <PlaceholderPage title="仓位" icon="💼" phase="Phase 2.6" description="持仓管理 + 业绩归因 + 预警" />
+        <PortfolioPage />
       </Layout>
     ),
   },

@@ -87,6 +87,14 @@ PAGE_REGISTRY: dict[str, dict[str, object]] = {
         "out_streamlit": Path("/tmp/streamlit_batch_page.png"),
         "out_diff": Path("/tmp/batch_visual_diff.png"),
     },
+    "portfolio": {
+        "react_url": "http://localhost:5173/portfolio",
+        "streamlit_url": "http://localhost:8501/portfolio",
+        "streamlit_button": "仓位",
+        "out_react": Path("/tmp/react_portfolio_page.png"),
+        "out_streamlit": Path("/tmp/streamlit_portfolio_page.png"),
+        "out_diff": Path("/tmp/portfolio_visual_diff.png"),
+    },
 }
 
 
@@ -399,6 +407,27 @@ PAGE_STRUCTURAL: dict[str, dict[str, object]] = {
             "batch_progress": [["状态", "完成"], ["取消"]],
             "batch_list": [["batch_id", "Batch ID"], ["进度", "状态"]],
             "batch_summary": [["汇总", "summary"], ["CSV", "导出"]],
+        },
+    },
+    "portfolio": {
+        "label": "portfolio page",
+        "selector_kind_react": "portfolio_page",
+        "regions": {
+            # Phase 2.7 — personal portfolio.  Both React PortfolioPage and
+            # Streamlit ``web/components/portfolio_panel.py`` share the same
+            # backend.core.portfolio_store + portfolio_calc + portfolio_alerts
+            # + portfolio_import singletons.  We assert the 5 functional
+            # regions that both surfaces expose:
+            #   1. identity — emoji + 中文标题 + 关键词
+            #   2. positions — 持仓表 (ticker / 数量 / 成本 / 现价 / 盈亏)
+            #   3. transactions — 流水表 (日期 / 类型 / 数量 / 价格)
+            #   4. allocation — 3 饼图 + 集中度指标
+            #   5. risk — XIRR / Sharpe / MaxDD / Brinson KPI 卡
+            "identity": ["💼", "仓位", "portfolio"],
+            "positions": [["代码", "成本"], ["盈亏", "现价"]],
+            "transactions": [["日期", "流水"], ["买入", "卖出"]],
+            "allocation": [["按行业", "按板块"], ["按资产类别", "集中度"]],
+            "risk": [["XIRR", "Sharpe"], ["MaxDD", "Brinson"]],
         },
     },
 }

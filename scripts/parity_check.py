@@ -350,9 +350,103 @@ def _check_batch() -> int:
     return 0
 
 
+def _check_portfolio() -> int:
+    """Phase 2.7 portfolio page — hash the canonical positions + risk payloads.
+
+    Both the React PortfolioPage (overview + risk tabs) and the Streamlit
+    ``web/components/portfolio_panel.py`` consume the same backend
+    ``backend.core.portfolio_store`` + ``portfolio_calc`` singletons, so the
+    JSON bytes are guaranteed identical → hash equality proves parity at the
+    data level.  We canonicalise by stripping volatile fields (``fetched_at``
+    floats + ``current_price`` which can drift between snapshots when the
+    Tencent quote vendor refreshes).
+    """
+    results: dict[str, dict] = {}
+    canonical_parts: list[dict] = []
+
+    # ── positions + transactions (overview tab data feed) ─────────────────
+    for endpoint in ("/api/portfolio/positions", "/api/portfolio/transactions"):
+        url = f"http://127.0.0.1:8000{endpoint}"
+        try:
+            request = Request(url, headers={"User-Agent": "parity-check/2.7"})
+            with urlopen(request, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            print(f"portfolio {endpoint} failed: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(payload, dict):
+            print(f"portfolio {endpoint} returned non-dict", file=sys.stderr)
+            return 1
+        # Strip volatile fields for stable parity hash.
+        if endpoint.endswith("/positions"):
+            VOLATILE_POS_KEYS = {"created_at", "current_price"}
+            positions = payload.get("positions") or []
+            cleaned = [
+                {k: v for k, v in p.items() if k not in VOLATILE_POS_KEYS}
+                for p in positions if isinstance(p, dict)
+            ]
+            canonical_parts.append({"endpoint": "positions", "positions": cleaned,
+                                    "count": payload.get("count", len(cleaned))})
+            results["positions"] = {"count": len(cleaned)}
+        else:
+            VOLATILE_TX_KEYS = {"created_at"}
+            txs = payload.get("transactions") or []
+            cleaned = [
+                {k: v for k, v in t.items() if k not in VOLATILE_TX_KEYS}
+                for t in txs if isinstance(t, dict)
+            ]
+            canonical_parts.append({"endpoint": "transactions", "transactions": cleaned,
+                                    "count": payload.get("count", len(cleaned))})
+            results["transactions"] = {"count": len(cleaned)}
+
+    # ── risk (XIRR / Sharpe / MaxDD / Brinson composite) ───────────────────
+    url = "http://127.0.0.1:8000/api/portfolio/risk"
+    try:
+        request = Request(url, headers={"User-Agent": "parity-check/2.7"})
+        with urlopen(request, timeout=15) as response:
+            risk_payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"portfolio /risk failed: {exc}", file=sys.stderr)
+        return 1
+    if not isinstance(risk_payload, dict):
+        print("portfolio /risk returned non-dict", file=sys.stderr)
+        return 1
+
+    # Strip volatile fields + status strings (computed live per request).
+    VOLATILE_RISK_KEYS = {"fetched_at", "xirr_status", "sharpe_status",
+                          "max_drawdown_status", "brinson_status"}
+    canonical_risk = {k: v for k, v in risk_payload.items()
+                      if k not in VOLATILE_RISK_KEYS}
+    canonical_parts.append({"endpoint": "risk", **canonical_risk})
+    results["risk"] = {
+        "positions_count": canonical_risk.get("positions_count", 0),
+        "transactions_count": canonical_risk.get("transactions_count", 0),
+        "sector_attribution_count": len(canonical_risk.get("sector_attribution", {})),
+    }
+
+    canonical = json.dumps(
+        canonical_parts,
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.md5(canonical).hexdigest()
+
+    total_count = (
+        results["positions"]["count"]
+        + results["transactions"]["count"]
+        + results["risk"]["sector_attribution_count"]
+    )
+    print(f"portfolio positions : {results['positions']['count']}")
+    print(f"portfolio tx        : {results['transactions']['count']}")
+    print(f"portfolio risk keys : {sorted(results['risk'].keys())}")
+    print(f"md5(canonical)      : {digest}")
+    print(f"data_hash_portfolio : {digest}", file=sys.stderr)
+    print(f"data_count_portfolio: {total_count}", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Parity check — data hash per page")
-    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), 'chart' (P2.4), 'sector' (P2.5), or 'batch' (P2.6)")
+    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), 'chart' (P2.4), 'sector' (P2.5), 'batch' (P2.6), or 'portfolio' (P2.7)")
     args = parser.parse_args()
 
     if args.page == "settings":
@@ -367,9 +461,11 @@ def main() -> int:
         return _check_sector()
     if args.page == "batch":
         return _check_batch()
+    if args.page == "portfolio":
+        return _check_portfolio()
 
     print(
-        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart', 'sector', 'batch')",
+        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart', 'sector', 'batch', 'portfolio')",
         file=sys.stderr,
     )
     return 1

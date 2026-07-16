@@ -70,6 +70,11 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "React": "http://localhost:5173/batch",
         "Streamlit": "http://localhost:8501/batch",
     },
+    "portfolio": {
+        "FastAPI": "http://127.0.0.1:8000/api/portfolio/positions",
+        "React": "http://localhost:5173/portfolio",
+        "Streamlit": "http://localhost:8501/portfolio",
+    },
 }
 
 
