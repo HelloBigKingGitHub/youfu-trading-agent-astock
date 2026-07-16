@@ -79,6 +79,14 @@ PAGE_REGISTRY: dict[str, dict[str, object]] = {
         "out_streamlit": Path("/tmp/streamlit_sector_page.png"),
         "out_diff": Path("/tmp/sector_visual_diff.png"),
     },
+    "batch": {
+        "react_url": "http://localhost:5173/batch",
+        "streamlit_url": "http://localhost:8501/batch",
+        "streamlit_button": "批量",
+        "out_react": Path("/tmp/react_batch_page.png"),
+        "out_streamlit": Path("/tmp/streamlit_batch_page.png"),
+        "out_diff": Path("/tmp/batch_visual_diff.png"),
+    },
 }
 
 
@@ -370,6 +378,27 @@ PAGE_STRUCTURAL: dict[str, dict[str, object]] = {
             "concepts": [["概念板块", "板块涨幅"]],
             "limit_up": [["涨停", "板块涨幅"]],
             "digest": [["板块轮动", "数据源"]],
+        },
+    },
+    "batch": {
+        "label": "batch page",
+        "selector_kind_react": "batch_page",
+        "regions": {
+            # Phase 2.6 — batch analysis.  Both React BatchPage and Streamlit
+            # ``web/components/batch_panel.py`` share the same JobQueue
+            # singleton (backend.core.job_queue) and the same
+            # ``create_batch`` / ``list_batches`` endpoints.  We assert the
+            # 5 functional regions that both surfaces expose:
+            #   1. identity — emoji + 中文标题 + 关键词
+            #   2. batch_form — ticker 输入 + 日期/worker 配置
+            #   3. batch_progress — 状态/进度/取消 控件
+            #   4. batch_list — 历史 batch 表格
+            #   5. batch_summary — 汇总 + CSV 导出按钮
+            "identity": ["📊", "批量", "batch"],
+            "batch_form": [["ticker", "股票代码"], ["max_workers", "最大并发"]],
+            "batch_progress": [["状态", "完成"], ["取消"]],
+            "batch_list": [["batch_id", "Batch ID"], ["进度", "状态"]],
+            "batch_summary": [["汇总", "summary"], ["CSV", "导出"]],
         },
     },
 }

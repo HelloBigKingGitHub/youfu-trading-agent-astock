@@ -202,6 +202,35 @@ def create_batch(
     }
 
 
+# ── GET /api/batch ────────────────────────────────────────────────────────────
+
+
+@router.get("/api/batch")
+def list_batches(
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict:
+    """列出当前 batch 队列中的所有 batch (按 created_at 倒序)。"""
+    q = get_job_queue()
+    batches = q.list_batches()
+    batches.sort(key=lambda b: b.created_at, reverse=True)
+    batches = batches[:limit]
+    return {
+        "batches": [
+            {
+                "batch_id": b.batch_id,
+                "batch_status": b.batch_status,
+                "total": len(b.jobs),
+                "finished_count": sum(1 for j in b.jobs if j.status == "completed"),
+                "error_count": sum(1 for j in b.jobs if j.status == "error"),
+                "created_at": b.created_at,
+                "jobs": [j.to_dict() for j in b.jobs],
+            }
+            for b in batches
+        ],
+        "total": len(batches),
+    }
+
+
 # ── GET /api/batch/{batch_id} ────────────────────────────────────────────────
 
 
@@ -246,6 +275,31 @@ def get_batch_summary(batch_id: str) -> dict:
         "batch_id": batch_id,
         "batch_status": batch.batch_status,
         "rows": rows,
+    }
+
+
+# ── GET /api/batch/{batch_id}/progress ────────────────────────────────────────
+
+
+@router.get("/api/batch/{batch_id}/progress")
+def get_batch_progress(batch_id: str) -> dict:
+    """进度详情 — 简单 HTTP 轮询替代 SSE。
+
+    返回 per-job 状态 + 当前 stage + elapsed + signal,供前端 useQuery 轮询。
+    """
+    q = get_job_queue()
+    batch = q.get_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return {
+        "batch_id": batch_id,
+        "batch_status": batch.batch_status,
+        "total": len(batch.jobs),
+        "finished_count": sum(1 for j in batch.jobs if j.status == "completed"),
+        "error_count": sum(1 for j in batch.jobs if j.status == "error"),
+        "running_count": sum(1 for j in batch.jobs if j.status == "running"),
+        "pending_count": sum(1 for j in batch.jobs if j.status == "pending"),
+        "jobs": [j.to_dict() for j in batch.jobs],
     }
 
 

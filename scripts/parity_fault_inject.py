@@ -14,6 +14,7 @@ Machine-readable STDERR summaries:
     fault_diff_logs: ...
     fault_diff_chart: ...
     fault_diff_sector: ...
+    fault_diff_batch: ...
 """
 
 from __future__ import annotations
@@ -82,12 +83,29 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "fault_url": "http://127.0.0.1:8000/api/sector/digest?top_n=abc",
         "fault_kind": "sector",
     },
+    "batch": {
+        "react_url": "http://localhost:5173/batch",
+        "streamlit_url": "http://localhost:8501/batch",
+        # POST /api/batch with a non-list body (string instead of array)
+        # → Pydantic list_type validation fails → HTTP 422.  Mirrors the
+        # history `limit=invalid` contract: deterministic 422 without
+        # touching the JobQueue singleton.
+        "fault_method": "POST",
+        "fault_url": "http://127.0.0.1:8000/api/batch?dedupe=false",
+        "fault_kind": "batch",
+    },
 }
+
+# Batch fault payload: send a JSON string instead of an array. Pydantic
+# validates the request body as `list[BatchItemInput]`, so a string fails
+# `list_type` and returns HTTP 422 deterministically (without consuming any
+# queue slots).
+BATCH_INVALID_PAYLOAD: Any = "not-a-list-of-items"
 
 # Keep the regex intentionally small and UI-oriented.  The fallback marker is
 # useful because the initial HTML of an SPA often contains no rendered error.
 ERROR_MARKERS = re.compile(
-    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|加载热力图失败|加载选股热度失败|加载概念板块失败|加载涨停归因失败|加载 4 段式报告失败|加载4段式报告失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|板块轮动|涨停|无概念板块|保存失败|请求失败|错误|Error|error|Invalid|invalid|"
+    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|加载热力图失败|加载选股热度失败|加载概念板块失败|加载涨停归因失败|加载 4 段式报告失败|加载4段式报告失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|板块轮动|涨停|无概念板块|保存失败|请求失败|批量分析失败|批量提交失败|bulk analysis failed|提交失败|错误|Error|error|Invalid|invalid|"
     r"Validation|validation|Exception|exception|Traceback|traceback|404|422|502)",
     re.IGNORECASE,
 )
@@ -134,20 +152,54 @@ def _get_html(url: str) -> tuple[int | None, str, str | None]:
 
 
 def _api_fault(page: str, cfg: dict[str, str]) -> tuple[int | None, str]:
+    """Fire the page's declared fault request and capture the HTTP status.
+
+    Each page in ``PAGE_REGISTRY`` declares its own ``fault_method`` +
+    ``fault_kind``.  The payload shape must match the endpoint's Pydantic
+    contract so we hit a deterministic validation failure (HTTP 422) instead
+    of touching any business state.  In particular:
+
+      * ``settings`` → ``PUT /api/settings`` with ``INVALID_PAYLOAD`` (object
+        with bad types: e.g. ``deepModel`` is a dict instead of a string).
+      * ``batch`` → ``POST /api/batch`` with ``BATCH_INVALID_PAYLOAD`` (a JSON
+        string body instead of a list of items — Pydantic ``list_type``).
+      * ``history`` / ``logs`` / ``chart`` / ``sector`` → ``GET`` with bad
+        query params (``limit=invalid``, ``ticker=INVALID_TICKER_NONEXIST``,
+        ``top_n=abc``).
+    """
     try:
-        if cfg["fault_method"] == "GET":
+        method = cfg["fault_method"]
+        if method == "GET":
             response = requests.get(
                 cfg["fault_url"],
                 timeout=TIMEOUT_SECONDS,
                 headers={"User-Agent": "parity-fault-inject/2"},
             )
-        else:
+        elif method == "PUT":
             response = requests.put(
                 cfg["fault_url"],
                 json=INVALID_PAYLOAD,
                 timeout=TIMEOUT_SECONDS,
                 headers={"User-Agent": "parity-fault-inject/2"},
             )
+        elif method == "POST":
+            # Batch fault: send a JSON string body instead of a list.  Using
+            # ``data`` (raw bytes) keeps the request body a string so
+            # FastAPI/Pydantic rejects it with ``list_type`` 422 — passing
+            # ``json=BATCH_INVALID_PAYLOAD`` would JSON-encode the string
+            # (still rejected, but the body shape differs and the validator
+            # type changes).  ``data=...`` is the deterministic path.
+            response = requests.post(
+                cfg["fault_url"],
+                data=BATCH_INVALID_PAYLOAD.encode("utf-8"),
+                headers={
+                    "User-Agent": "parity-fault-inject/2",
+                    "Content-Type": "application/json",
+                },
+                timeout=TIMEOUT_SECONDS,
+            )
+        else:  # pragma: no cover - guard for unknown methods
+            return None, f"unsupported fault_method {method!r}"
         return response.status_code, response.text[:240].replace("\n", " ")
     except requests.RequestException as exc:
         return None, f"{type(exc).__name__}: {exc}"
@@ -268,9 +320,40 @@ const [reactUrl, streamlitUrl, pageKey, executablePath] = process.argv.slice(3);
         });
       });
     }
+    if (pageKey === 'batch' && label === 'react') {
+      // Intercept POST /api/batch so React's BatchPage reliably surfaces the
+      // destructive error banner (batch-submit-error).  The /batch URL
+      // alone would land on a healthy page (no auto-submit on first paint),
+      // so without this route the React default render would never call the
+      // POST endpoint and the error banner would never appear.  Mirrors the
+      // chart/sector pattern: simulate the server-side validation failure
+      // deterministically.
+      await page.route(url => {
+        try {
+          const parsed = new URL(String(url));
+          return parsed.hostname === 'localhost'
+            && parsed.pathname === '/api/batch';
+        } catch (_) {
+          return false;
+        }
+      }, async route => {
+        await route.fulfill({
+          status: 422,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            detail: [{
+              type: 'list_type',
+              loc: ['body'],
+              msg: 'Input should be a valid list',
+              input: 'not-a-list-of-items',
+            }],
+          }),
+        });
+      });
+    }
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForTimeout(1500);
-    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [data-testid="chart-kline-error"], [data-testid="chart-empty"], [data-testid="sector-heatmap-error"], [data-testid="sector-top-stocks-error"], [data-testid="sector-concepts-error"], [data-testid="sector-limit-up-error"], [data-testid="sector-digest-error"], [role="alert"]');
+    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [data-testid="chart-kline-error"], [data-testid="chart-empty"], [data-testid="sector-heatmap-error"], [data-testid="sector-top-stocks-error"], [data-testid="sector-concepts-error"], [data-testid="sector-limit-up-error"], [data-testid="sector-digest-error"], [data-testid="batch-submit-error"], [role="alert"]');
     let text = '';
     if (await errorLocator.count()) text = await errorLocator.first().innerText();
     if (!text) text = await page.locator('body').innerText();
@@ -344,6 +427,7 @@ _FAULT_MARKERS = {
     "logs": "fault_diff_logs",
     "chart": "fault_diff_chart",
     "sector": "fault_diff_sector",
+    "batch": "fault_diff_batch",
 }
 
 
@@ -382,7 +466,7 @@ def main() -> int:
     parser.add_argument(
         "--page",
         default=None,
-        help="Gate-facing page key (settings, history, logs, chart); all pages are always probed",
+        help="Gate-facing page key (settings, history, logs, chart, sector, batch); all pages are always probed",
     )
     args = parser.parse_args()
     if args.page is not None and args.page not in PAGE_REGISTRY:

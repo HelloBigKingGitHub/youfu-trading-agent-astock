@@ -289,9 +289,70 @@ def _check_sector() -> int:
     return 0
 
 
+def _check_batch() -> int:
+    """Phase 2.6 batch page — hash the canonical GET /api/batch?limit=20 list.
+
+    The endpoint returns the JobQueue singleton's currently-known batches,
+    newest-first. Both the React BatchPage (history tab) and the Streamlit
+    ``web/components/batch_panel.py`` history expander hit the same backend
+    queue, so the JSON bytes are guaranteed identical → hash equality proves
+    parity at the data level. We canonicalise by stripping volatile fields
+    (timestamps + per-job runtime) so the hash is stable across runs where
+    jobs may have advanced between snapshots.
+    """
+    url = "http://127.0.0.1:8000/api/batch?limit=20"
+    try:
+        request = Request(url, headers={"User-Agent": "parity-check/2.6"})
+        with urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"batch endpoint failed: {exc}", file=sys.stderr)
+        return 1
+
+    if not isinstance(payload, dict):
+        print("batch endpoint returned non-dict", file=sys.stderr)
+        return 1
+
+    batches = payload.get("batches")
+    if not isinstance(batches, list):
+        print("batch endpoint returned no batches list", file=sys.stderr)
+        return 1
+
+    # Strip volatile fields per batch + per job for stable parity hash.
+    # Mirrors the strategy used by logs/history: identity is captured by
+    # batch_id + ticker + status + signal, NOT by elapsed/created_at.
+    VOLATILE_BATCH_KEYS = {"created_at", "finished_at"}
+    VOLATILE_JOB_KEYS = {"created_at", "started_at", "finished_at", "elapsed"}
+    cleaned_batches: list[dict] = []
+    for b in batches:
+        if not isinstance(b, dict):
+            continue
+        cb = {k: v for k, v in b.items() if k not in VOLATILE_BATCH_KEYS}
+        jobs = cb.get("jobs") or []
+        cb["jobs"] = [
+            {k: v for k, v in j.items() if k not in VOLATILE_JOB_KEYS}
+            for j in jobs if isinstance(j, dict)
+        ]
+        cleaned_batches.append(cb)
+
+    canonical = json.dumps(
+        {"batches": cleaned_batches, "total": payload.get("total", len(cleaned_batches))},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.md5(canonical).hexdigest()
+
+    print(f"batch endpoint  : {url}")
+    print(f"batch batches   : {len(cleaned_batches)}")
+    print(f"batch jobs total: {sum(len(b.get('jobs', [])) for b in cleaned_batches)}")
+    print(f"md5(canonical)  : {digest}")
+    print(f"data_hash_batch: {digest}", file=sys.stderr)
+    print(f"data_count_batch: {len(cleaned_batches)}", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Parity check — data hash per page")
-    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), 'chart' (P2.4), or 'sector' (P2.5)")
+    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), 'chart' (P2.4), 'sector' (P2.5), or 'batch' (P2.6)")
     args = parser.parse_args()
 
     if args.page == "settings":
@@ -304,9 +365,11 @@ def main() -> int:
         return _check_chart()
     if args.page == "sector":
         return _check_sector()
+    if args.page == "batch":
+        return _check_batch()
 
     print(
-        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart', 'sector')",
+        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart', 'sector', 'batch')",
         file=sys.stderr,
     )
     return 1

@@ -7,6 +7,7 @@ import { HistoryPage } from '@/pages/HistoryPage';
 import { LogsPage } from '@/pages/LogsPage';
 import ChartPage from '@/pages/ChartPage';
 import SectorPage from '@/pages/SectorPage';
+import BatchPage from '@/pages/BatchPage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 
 function Layout({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle?: string }) {
@@ -41,7 +42,7 @@ const router = createBrowserRouter([
     path: '/batch',
     element: (
       <Layout title="批量分析" subtitle="多 ticker 并行投研分析">
-        <PlaceholderPage title="批量分析" icon="📊" phase="Phase 2.4" description="批量 ticker 分析 + 进度监控" />
+        <BatchPage />
       </Layout>
     ),
   },

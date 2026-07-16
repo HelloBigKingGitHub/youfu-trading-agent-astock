@@ -11,7 +11,7 @@ The script deliberately uses only the Python standard library.  Human-readable
 individual timings go to STDOUT and the one-line machine-readable contract is
 written to STDERR:
 
-    perf_ms: settings_FastAPI=Xms settings_React=Yms settings_Streamlit=Zms history_FastAPI=Xms history_React=Yms history_Streamlit=Zms logs_FastAPI=Xms logs_React=Yms logs_Streamlit=Zms chart_FastAPI=Xms chart_React=Yms chart_Streamlit=Zms sector_FastAPI=Xms sector_React=Yms sector_Streamlit=Zms
+    perf_ms: settings_FastAPI=Xms settings_React=Yms settings_Streamlit=Zms history_FastAPI=Xms history_React=Yms history_Streamlit=Zms logs_FastAPI=Xms logs_React=Yms logs_Streamlit=Zms chart_FastAPI=Xms chart_React=Yms chart_Streamlit=Zms sector_FastAPI=Xms sector_React=Yms sector_Streamlit=Zms batch_FastAPI=Xms batch_React=Yms batch_Streamlit=Zms
 """
 
 from __future__ import annotations
@@ -64,6 +64,11 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "FastAPI": "http://127.0.0.1:8000/api/sector/digest?top_n=20",
         "React": "http://localhost:5173/sector",
         "Streamlit": "http://localhost:8501/sector",
+    },
+    "batch": {
+        "FastAPI": "http://127.0.0.1:8000/api/batch?limit=20",
+        "React": "http://localhost:5173/batch",
+        "Streamlit": "http://localhost:8501/batch",
     },
 }
 
