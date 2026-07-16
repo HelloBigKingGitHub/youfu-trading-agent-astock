@@ -31,7 +31,12 @@ import {
   getRecentAnalyzes,
   startAnalysis,
 } from '@/api/analyze';
-import type { AnalyzeRequest, RecentAnalyzeItem } from '@/api/analyze';
+import type {
+  AnalyzeReport as AnalyzeReportResponse,
+  AnalyzeRequest,
+  ProgressResponse,
+  RecentAnalyzeItem,
+} from '@/api/analyze';
 import { AnalysisForm } from '@/components/analyze/analysis-form';
 import { AnalysisProgress } from '@/components/analyze/analysis-progress';
 import { AnalysisReport } from '@/components/analyze/analysis-report';
@@ -57,6 +62,9 @@ const TABS: TabDef[] = [
 
 const DEFAULT_TAB: TabKey = 'new';
 const POLL_INTERVAL_MS = 2000;
+
+type ProgressData = ProgressResponse | null;
+type ReportData = AnalyzeReportResponse | null;
 
 /**
  * P2.12 hotfix — predicate that decides whether `activeAnalysisId` is
@@ -104,34 +112,39 @@ export function AnalyzePage() {
   });
 
   // Live progress (only when we have an active analysis).
-  // P2.12 hotfix — three layers of defense against the `/api/analyze/null`
+  // P2.13 hotfix — three layers of defense against the `/api/analyze/null`
   // 404 storm:
   //   1. `enabled` rejects null / undefined / "null" / "undefined" up front
   //   2. queryFn double-checks (catches HMR / refetchInterval races where
   //      React Query v5 fires the closure even after `enabled` flipped)
   //   3. queryKey uses a sentinel so the cache slot stays distinct from a
   //      hypothetical real-id request, preventing stale-key reuse
-  const progressQuery = useQuery({
+  const progressQuery = useQuery<ProgressData>({
     queryKey: ['analyze-progress', activeAnalysisId ?? '__none__'],
-    queryFn: () => {
+    queryFn: async () => {
       if (!isUsableAnalysisId(activeAnalysisId)) {
-        // Should never run when enabled=false; if it does, fail loudly
-        // so React Query records the error instead of triggering a 404.
-        throw new Error(
-          `[AnalyzePage] progress queryFn called with invalid id: ${String(activeAnalysisId)}`,
-        );
+        // React Query can still invoke queryFn from an explicit refetch or a
+        // polling race after enabled flips false. Invalid IDs are an empty
+        // state, not a request failure: do not put the query into error state.
+        return null;
       }
       return getAnalysis(activeAnalysisId);
     },
     enabled: isUsableAnalysisId(activeAnalysisId) && activeTab === 'progress',
     refetchInterval: (q) => {
-      const status = (q.state.data as { status?: string } | undefined)?.status;
+      if (!isUsableAnalysisId(activeAnalysisId) || activeTab !== 'progress') {
+        return false;
+      }
+      const data = q.state.data;
+      if (!data) return POLL_INTERVAL_MS;
+      const status = data.status;
       if (status === 'ok' || status === 'error' || status === 'complete') {
         return false;
       }
       return POLL_INTERVAL_MS;
     },
     staleTime: 0,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
   });
 
@@ -175,15 +188,13 @@ export function AnalyzePage() {
   }, [activeAnalysisId, recentQuery.data, fallbackToHistory]);
 
   // Full report (lazy — only when user clicks 报告 tab).
-  // P2.12 hotfix — same three-layer defense as progressQuery above; plus
+  // P2.13 hotfix — same three-layer defense as progressQuery above; plus
   // the P2.10 "ID must appear in recent list" gate stays intact.
-  const reportQuery = useQuery({
+  const reportQuery = useQuery<ReportData>({
     queryKey: ['analyze-report', activeAnalysisId ?? '__none__'],
-    queryFn: () => {
+    queryFn: async () => {
       if (!isUsableAnalysisId(activeAnalysisId)) {
-        throw new Error(
-          `[AnalyzePage] report queryFn called with invalid id: ${String(activeAnalysisId)}`,
-        );
+        return null;
       }
       return getAnalysisReport(activeAnalysisId);
     },
@@ -377,7 +388,9 @@ export function AnalyzePage() {
             )}
 
             {activeTab === 'progress' && (
-              progressError ? (
+              !isUsableAnalysisId(activeAnalysisId) && progressQuery.data == null ? (
+                <AnalysisProgress progress={null} isPolling={false} />
+              ) : progressError ? (
                 <Alert variant="destructive" data-testid="analyze-progress-error">
                   <AlertTitle>加载进度失败</AlertTitle>
                   <AlertDescription className="flex items-center gap-3">
@@ -401,11 +414,15 @@ export function AnalyzePage() {
             )}
 
             {activeTab === 'report' && (
-              <AnalysisReport
-                report={reportQuery.data ?? null}
-                isLoading={reportQuery.isLoading}
-                error={reportError}
-              />
+              !isUsableAnalysisId(activeAnalysisId) && reportQuery.data == null ? (
+                <AnalysisReport report={null} isLoading={false} error={null} />
+              ) : (
+                <AnalysisReport
+                  report={reportQuery.data ?? null}
+                  isLoading={reportQuery.isLoading}
+                  error={reportError}
+                />
+              )
             )}
 
             {activeTab === 'history' && (
