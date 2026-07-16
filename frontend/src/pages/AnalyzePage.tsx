@@ -30,6 +30,7 @@ import {
   getAnalysisReport,
   getRecentAnalyzes,
   startAnalysis,
+  cancelAnalysis,
 } from '@/api/analyze';
 import type {
   AnalyzeReport as AnalyzeReportResponse,
@@ -110,6 +111,11 @@ export function AnalyzePage() {
     staleTime: 10_000,
     refetchOnWindowFocus: false,
   });
+
+  // P2.22 hotfix — declare `recentItems` early so the cancel event listener
+  // useEffect below can reference it without triggering a TDZ ReferenceError
+  // (it ran on first render, before the original late declaration on line 331).
+  const recentItems = recentQuery.data ?? [];
 
   // Live progress (only when we have an active analysis).
   // P2.13 hotfix — three layers of defense against the `/api/analyze/null`
@@ -234,6 +240,52 @@ export function AnalyzePage() {
     onError: (e) => setFormError(e instanceof Error ? e.message : String(e)),
   });
 
+  // P2.21 hotfix — cancel a running analysis. Mark the cache invalidated
+  // so the recent list shows the new error status immediately.
+  const cancelMut = useMutation({
+    mutationFn: (analysisId: string) => cancelAnalysis(analysisId),
+    onSuccess: (result) => {
+      toast({
+        title: '已取消分析',
+        description: `分析 ${result.analysis_id} 已标记为取消 (后台线程仍会运行到自然结束)`,
+        variant: 'success',
+      });
+      void queryClient.invalidateQueries({ queryKey: ['analyze-progress', activeAnalysisId ?? '__none__'] });
+      void queryClient.invalidateQueries({ queryKey: ['analyze-recent'] });
+    },
+    onError: (e) => {
+      toast({
+        title: '取消失败',
+        description: e instanceof Error ? e.message : String(e),
+        variant: 'error',
+      });
+    },
+  });
+
+  // Wire the cancel button inside AnalysisProgress — it dispatches a custom
+  // event with ticker/trade_date so we look up the right analysis_id from
+  // the recent list (the ProgressResponse doesn't carry the analysis_id).
+  React.useEffect(() => {
+    function onCancel(ev: Event) {
+      const detail = (ev as CustomEvent<{ ticker: string; trade_date: string }>).detail;
+      if (!detail) return;
+      const match = recentItems.find(
+        (it) => it.ticker === detail.ticker && it.trade_date === detail.trade_date,
+      );
+      if (!match) {
+        toast({
+          title: '取消失败',
+          description: `找不到 ${detail.ticker}/${detail.trade_date} 对应的 analysis_id`,
+          variant: 'error',
+        });
+        return;
+      }
+      cancelMut.mutate(match.analysis_id);
+    }
+    window.addEventListener('analyze:cancel', onCancel as EventListener);
+    return () => window.removeEventListener('analyze:cancel', onCancel as EventListener);
+  }, [recentItems, cancelMut, toast]);
+
   function handleRefresh() {
     void recentQuery.refetch();
     void progressQuery.refetch();
@@ -281,7 +333,9 @@ export function AnalyzePage() {
   const progressError = errStr(progressQuery);
   const reportError = errStr(reportQuery);
 
-  const recentItems = recentQuery.data ?? [];
+  // P2.22 hotfix — `recentItems` was originally declared here, but the cancel
+  // event listener useEffect above referenced it on first render, causing a
+  // TDZ ReferenceError. Moved the declaration up next to `recentQuery`.
   const progress = progressQuery.data ?? null;
   const isComplete = progress?.status === 'ok' || progress?.status === 'complete';
 

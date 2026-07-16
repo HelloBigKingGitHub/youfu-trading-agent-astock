@@ -31,6 +31,14 @@ _RESULTS_DIR = Path.home() / ".tradingagents" / "logs"
 # a zombie on backend startup.
 ZOMBIE_THRESHOLD_SEC = 60.0
 
+# P2.21 hotfix: a "stuck" analysis is one that DID start progressing
+# (elapsed > 0 or has completed_stages) but has been running too long.
+# The user's 600595_2026-07-16_1589cdfd ran 8.2 hours doing 8/12 stages
+# then wedged on lockup (LLM API hang + mootdx port unreachable). The
+# previous is_zombie() only caught `elapsed == 0`, so this case slipped
+# through. We sweep it on startup too.
+STUCK_THRESHOLD_SEC = 600.0  # 10 minutes
+
 
 @dataclass
 class HistoryEntry:
@@ -250,7 +258,7 @@ class HistoryStore:
     def is_zombie(entry: HistoryEntry, now: float | None = None) -> bool:
         """Return True if entry claims to be running but is suspiciously stale.
 
-        A zombie is an entry where:
+        A "zombie" in the P2.14 sense is an entry where:
           - status == "running"
           - elapsed == 0 (never progressed)
           - completed_stages == [] (no stage ever finished)
@@ -259,36 +267,65 @@ class HistoryStore:
         Root cause: a uvicorn restart SIGKILL'd the worker thread while the
         history.json was already on disk with status=running. The file
         persists but no thread ever updates it again, so it sits at 0/0/0
-        forever. Used by the backend startup hook to mark these as error.
+        forever.
+
+        P2.21 hotfix — also catch "stuck" entries: those that DID start
+        progressing (elapsed > 0) but have been running longer than
+        STUCK_THRESHOLD_SEC (default 10 min). The user's
+        ``600595_2026-07-16_1589cdfd`` ran 8.2 hours, did 8/12 stages,
+        then wedged on ``lockup`` (LLM API hang + mootdx port unreachable)
+        with ``elapsed`` climbing the whole time — so the original
+        elapsed==0 zombie check missed it.
         """
         if now is None:
             now = time.time()
-        return (
-            entry.status == "running"
-            and entry.elapsed == 0.0
-            and not entry.completed_stages
-            and (now - entry.created_at) > ZOMBIE_THRESHOLD_SEC
-        )
+
+        if entry.status != "running":
+            return False
+
+        # True zombie: never moved
+        if entry.elapsed == 0.0 and not entry.completed_stages:
+            return (now - entry.created_at) > ZOMBIE_THRESHOLD_SEC
+
+        # Stuck: has moved but is taking too long
+        if entry.elapsed > 0:
+            return entry.elapsed > STUCK_THRESHOLD_SEC
+
+        return False
 
     def cleanup_zombies(self, now: float | None = None) -> list[str]:
-        """Mark all zombie entries as error. Returns list of analysis_ids cleaned.
+        """Mark all zombie + stuck entries as error. Returns analysis_ids cleaned.
 
         Called from ``backend.main`` on FastAPI startup so the recent-list
         UI never shows a permanently-stuck entry. Idempotent — re-running
         on a clean store is a no-op.
+
+        P2.21 — cleans up both never-progressed zombies (P2.14) and
+        in-progress-but-too-long stuck entries (P2.21 hotfix).
         """
         if now is None:
             now = time.time()
         cleaned: list[str] = []
         entries, _ = self.list_all(limit=1000, offset=0)
         for entry in entries:
-            if self.is_zombie(entry, now=now):
-                self.mark_error(
-                    entry.analysis_id,
-                    error="分析被中断 (server restart, thread was SIGKILL'd)",
-                    elapsed=entry.elapsed or 0.0,
+            if not self.is_zombie(entry, now=now):
+                continue
+            # Distinguish the two failure modes in the error message so the
+            # recent-list UI can explain it accurately.
+            if entry.elapsed == 0.0 and not entry.completed_stages:
+                reason = "分析被中断 (server restart, thread was SIGKILL'd)"
+            else:
+                reason = (
+                    f"分析超时被清理 (elapsed={entry.elapsed:.1f}s > "
+                    f"{STUCK_THRESHOLD_SEC:.0f}s, 可能卡在 "
+                    f"{entry.completed_stages[-1] if entry.completed_stages else '未知'} 阶段)"
                 )
-                cleaned.append(entry.analysis_id)
+            self.mark_error(
+                entry.analysis_id,
+                error=reason,
+                elapsed=entry.elapsed or 0.0,
+            )
+            cleaned.append(entry.analysis_id)
         return cleaned
 
     # ── internal ───────────────────────────────────────────────────────────────

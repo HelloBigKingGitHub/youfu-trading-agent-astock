@@ -14,12 +14,16 @@ import sys
 from pathlib import Path
 from typing import List
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.core import start_analysis
 from backend.core.history_store import get_history_store
 from backend.models.request import AnalyzeRequest, AnalyzeResponse
+
+logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -127,6 +131,72 @@ def mark_analysis_error(
     store.mark_error(analysis_id, reason, elapsed=entry.elapsed or 0.0)
     return {
         "analysis_id": analysis_id,
+        "status": "error",
+        "reason": reason,
+    }
+
+
+# ── P2.21 hotfix: POST /api/analyze/{analysis_id}/cancel ──────────────────────
+
+@router.post("/analyze/{analysis_id}/cancel", status_code=200)
+def cancel_analysis(analysis_id: str) -> dict:
+    """Mark a running analysis as error-cancelled (user-initiated cleanup).
+
+    P2.21 hotfix — the user reported ``600595_2026-07-16_1589cdfd`` was stuck
+    for 8.2 hours with no way to stop it from the React UI. This endpoint
+    gives the React AnalyzePage a one-click "取消" button that flips the
+    history entry to ``error`` so the polling loop stops and the recent list
+    no longer shows it as ``running``.
+
+    Important — Python has no safe way to kill a background thread, so this
+    does NOT terminate the worker. The thread will eventually finish or
+    error out naturally and write its own completion/error status. The
+    important effect is on the UI: the entry's status flips to ``error``
+    immediately, so the polling interval stops and the recent-list tab
+    treats it as done.
+
+    P2.21 hotfix — also accepts an ID from the POST response, even though
+    ``tracker_id != history_id`` due to a separate UUID generation in
+    TrackerStore.create() vs HistoryStore.create(). If the direct lookup
+    misses, we fall back to ``find_by_ticker_date`` for analyses that
+    started today and are still running.
+    """
+    store = get_history_store()
+    entry = store.get(analysis_id)
+    if entry is None:
+        # Fallback: POST /api/analyze returns the TrackerStore analysis_id
+        # but the history file uses a freshly generated one from
+        # HistoryStore.create() — they don't match. Try to recover by
+        # ticker+date for recent running entries.
+        if "_" in analysis_id and analysis_id.count("_") >= 2:
+            parts = analysis_id.rsplit("_", 2)
+            if len(parts) == 3:
+                ticker, trade_date, _uid = parts
+                recent = store.find_by_ticker_date(ticker, trade_date)
+                if recent and recent.status in ("running", "pending"):
+                    entry = recent
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"分析 {analysis_id!r} 不存在",
+        )
+    if entry.status not in ("running", "pending"):
+        # 409 — only running/pending can be cancelled. Already-finished
+        # entries are immutable from the user's perspective.
+        raise HTTPException(
+            status_code=409,
+            detail=f"分析状态是 {entry.status}, 不可取消",
+        )
+
+    reason = "用户手动取消"
+    store.mark_error(entry.analysis_id, reason, elapsed=entry.elapsed or 0.0)
+
+    logger.warning(
+        f"Analysis {entry.analysis_id} cancelled by user (thread still running, "
+        f"elapsed={entry.elapsed:.1f}s)"
+    )
+    return {
+        "analysis_id": entry.analysis_id,
         "status": "error",
         "reason": reason,
     }

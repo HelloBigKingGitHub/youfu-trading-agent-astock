@@ -160,3 +160,24 @@ export async function getRecentAnalyzes(limit: number = 20): Promise<RecentAnaly
   }
   return (await res.json()) as RecentAnalyzeItem[];
 }
+
+// ── POST /api/analyze/{id}/cancel ────────────────────────────────────────────
+
+/** P2.21 hotfix — user can cancel a stuck/slow analysis from the UI. */
+export interface CancelAnalysisResult {
+  analysis_id: string;
+  status: 'error';
+  reason: string;
+}
+
+export async function cancelAnalysis(analysisId: string): Promise<CancelAnalysisResult> {
+  const safeId = safeAnalysisId(analysisId);
+  const res = await fetch(
+    _url(`/api/analyze/${encodeURIComponent(safeId)}/cancel`),
+    { method: 'POST', credentials: 'omit' },
+  );
+  if (!res.ok) {
+    throw new Error(`POST /api/analyze/${safeId}/cancel ${res.status}: ${await res.text()}`);
+  }
+  return (await res.json()) as CancelAnalysisResult;
+}

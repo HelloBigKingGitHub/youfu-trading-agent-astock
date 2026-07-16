@@ -82,7 +82,17 @@ def _run_analysis(
                 if tracker.current_stage != stage_id:
                     tracker.mark_stage_active(stage_id)
                 tracker.mark_stage_done(stage_id, str(content)[:500])
-                tracker.mark_stage_active("")  # Clear active after marking done
+                # P2.21 hotfix — previously this cleared current_stage to ""
+                # after every mark_stage_done, which made the React progress
+                # UI show no current stage during stage transitions (the
+                # user reported the progress tab was blank for 8+ hours).
+                # We now KEEP current_stage pointing at the just-finished
+                # stage until the next stage's chunk arrives and overwrites
+                # it via the `if tracker.current_stage != stage_id` branch
+                # above. The frontend (修 4) additionally infers current_stage
+                # from completed_stages when this is empty for older history
+                # entries, so we don't need to write "" anymore.
+                # tracker.mark_stage_active("")  # ← removed in P2.21
 
         # Update stats
         s = stats.get_stats()
