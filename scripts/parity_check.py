@@ -491,9 +491,66 @@ def _check_schedule() -> int:
     return 0
 
 
+def _check_analyze() -> int:
+    """Phase 2.9 analyze page — hash the canonical /api/analyze/recent payload.
+
+    Both the React AnalyzePage (analysis_form / progress / report / workspace)
+    and the Streamlit ``web/components/analyze_panel.py`` consume the same
+    backend ``backend.api.analyze`` ``LogStore.recent_runs()`` singleton, so
+    the JSON bytes are guaranteed identical → hash equality proves parity at
+    the data level. We canonicalise by stripping volatile fields
+    (``fetched_at`` floats that drift between snapshots) so the hash is stable
+    across runs.
+    """
+    canonical_parts: list = []
+    counts: dict[str, int] = {}
+
+    for endpoint in ("/api/analyze/recent?limit=10",):
+        url = f"http://127.0.0.1:8000{endpoint}"
+        try:
+            request = Request(url, headers={"User-Agent": "parity-check/2.9"})
+            with urlopen(request, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            print(f"analyze {endpoint} failed: {exc}", file=sys.stderr)
+            return 1
+
+        # Backend returns ``List[RecentAnalyzeItem]`` directly; wrap so the
+        # canonical payload is stable for hashing across runs.
+        if isinstance(payload, list):
+            runs = payload
+        elif isinstance(payload, dict):
+            runs = payload.get("runs", [])
+        else:
+            print(f"analyze {endpoint} returned non-dict / non-list", file=sys.stderr)
+            return 1
+
+        # Strip volatile fields for stable parity hash.
+        VOLATILE_KEYS = {"fetched_at", "created_at"}
+        cleaned_runs = [
+            {k: v for k, v in (run.items() if isinstance(run, dict) else [("value", run)]) if k not in VOLATILE_KEYS}
+            for run in runs
+        ]
+        canonical_parts.append({"endpoint": endpoint, "runs": cleaned_runs})
+        counts[endpoint] = len(cleaned_runs)
+
+    canonical = json.dumps(
+        canonical_parts,
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.md5(canonical).hexdigest()
+
+    total = sum(counts.values())
+    print(f"analyze recent   : {counts.get('/api/analyze/recent?limit=10', 0)}")
+    print(f"md5(canonical)   : {digest}")
+    print(f"data_hash_analyze: {digest}", file=sys.stderr)
+    print(f"data_count_analyze: {total}", file=sys.stderr)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Parity check — data hash per page")
-    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), 'chart' (P2.4), 'sector' (P2.5), 'batch' (P2.6), 'portfolio' (P2.7), or 'schedule' (P2.8)")
+    parser.add_argument("--page", required=True, help="Page key: 'settings' (P1), 'history' (P2.2), 'logs' (P2.3), 'chart' (P2.4), 'sector' (P2.5), 'batch' (P2.6), 'portfolio' (P2.7), 'schedule' (P2.8), or 'analyze' (P2.9)")
     args = parser.parse_args()
 
     if args.page == "settings":
@@ -512,9 +569,11 @@ def main() -> int:
         return _check_portfolio()
     if args.page == "schedule":
         return _check_schedule()
+    if args.page == "analyze":
+        return _check_analyze()
 
     print(
-        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart', 'sector', 'batch', 'portfolio', 'schedule')",
+        f"unsupported --page {args.page!r} (supported: 'settings', 'history', 'logs', 'chart', 'sector', 'batch', 'portfolio', 'schedule', 'analyze')",
         file=sys.stderr,
     )
     return 1

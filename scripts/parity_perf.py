@@ -11,7 +11,7 @@ The script deliberately uses only the Python standard library.  Human-readable
 individual timings go to STDOUT and the one-line machine-readable contract is
 written to STDERR:
 
-    perf_ms: settings_FastAPI=Xms settings_React=Yms settings_Streamlit=Zms history_FastAPI=Xms history_React=Yms history_Streamlit=Zms logs_FastAPI=Xms logs_React=Yms logs_Streamlit=Zms chart_FastAPI=Xms chart_React=Yms chart_Streamlit=Zms sector_FastAPI=Xms sector_React=Yms sector_Streamlit=Zms batch_FastAPI=Xms batch_React=Yms batch_Streamlit=Zms portfolio_FastAPI=Xms portfolio_React=Yms portfolio_Streamlit=Zms schedule_FastAPI=Xms schedule_React=Yms schedule_Streamlit=Zms
+    perf_ms: settings_FastAPI=Xms settings_React=Yms settings_Streamlit=Zms history_FastAPI=Xms history_React=Yms history_Streamlit=Zms logs_FastAPI=Xms logs_React=Yms logs_Streamlit=Zms chart_FastAPI=Xms chart_React=Yms chart_Streamlit=Zms sector_FastAPI=Xms sector_React=Yms sector_Streamlit=Zms batch_FastAPI=Xms batch_React=Yms batch_Streamlit=Zms portfolio_FastAPI=Xms portfolio_React=Yms portfolio_Streamlit=Zms schedule_FastAPI=Xms schedule_React=Yms schedule_Streamlit=Zms analyze_FastAPI=Xms analyze_React=Yms analyze_Streamlit=Zms
 """
 
 from __future__ import annotations
@@ -79,6 +79,11 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "FastAPI": "http://127.0.0.1:8000/api/schedule/list",
         "React": "http://localhost:5173/schedule",
         "Streamlit": "http://localhost:8501/schedule",
+    },
+    "analyze": {
+        "FastAPI": "http://127.0.0.1:8000/api/analyze/recent?limit=10",
+        "React": "http://localhost:5173/analyze",
+        "Streamlit": "http://localhost:8501/analyze",
     },
 }
 

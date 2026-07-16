@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import { SettingsPage } from '@/pages/SettingsPage';
@@ -10,6 +10,7 @@ import SectorPage from '@/pages/SectorPage';
 import BatchPage from '@/pages/BatchPage';
 import PortfolioPage from '@/pages/PortfolioPage';
 import SchedulePage from '@/pages/SchedulePage';
+import AnalyzePage from '@/pages/AnalyzePage';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 
 function Layout({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle?: string }) {
@@ -38,7 +39,11 @@ const router = createBrowserRouter([
   },
   {
     path: '/analyze',
-    element: <Navigate to="/" replace />,
+    element: (
+      <Layout title="分析" subtitle="单股投研分析入口 (Streamlit 共用)">
+        <AnalyzePage />
+      </Layout>
+    ),
   },
   {
     path: '/batch',

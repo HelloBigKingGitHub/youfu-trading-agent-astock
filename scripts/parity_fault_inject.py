@@ -17,6 +17,7 @@ Machine-readable STDERR summaries:
     fault_diff_batch: ...
     fault_diff_portfolio: ...
     fault_diff_schedule: ...
+    fault_diff_analyze: ...
 """
 
 from __future__ import annotations
@@ -121,6 +122,20 @@ PAGE_REGISTRY: dict[str, dict[str, str]] = {
         "fault_url": "http://127.0.0.1:8000/api/schedule/create",
         "fault_kind": "schedule",
     },
+    "analyze": {
+        "react_url": "http://localhost:5173/analyze",
+        "streamlit_url": "http://localhost:8501/analyze",
+        # POST /api/analyze with an invalid ticker (3 chars instead of 6) →
+        # backend.core.start_analysis validates ticker format (must match the
+        # safe_ticker_component 6-digit regex) and raises ValueError →
+        # FastAPI surfaces HTTP 422. Mirrors the schedule pattern: deterministic
+        # 422 without starting any analysis (the validator runs before
+        # dispatch). trade_date is a valid string so the validation surface
+        # isolates the ticker format check.
+        "fault_method": "POST",
+        "fault_url": "http://127.0.0.1:8000/api/analyze",
+        "fault_kind": "analyze",
+    },
 }
 
 # Batch fault payload: send a JSON string instead of an array. Pydantic
@@ -141,11 +156,24 @@ SCHEDULE_INVALID_PAYLOAD: dict[str, Any] = {
     "notify_channels": ["log"],
 }
 
+# Analyze fault payload: send ``ticker`` as an integer instead of a string.
+# FastAPI/Pydantic ``AnalyzeRequest`` declares ``ticker: str`` so the type
+# mismatch is caught before the handler runs and the API returns HTTP 422
+# deterministically.  ``trade_date`` is a valid string so the validation
+# surface isolates the ticker type check.  (The backend ``start_analysis``
+# ticker-format validator is downstream of the Pydantic check, so the
+# client-side regex is enforced separately; this fault exercises the Pydantic
+# surface only — the deterministic 422 path that exists on every other page.)
+ANALYZE_INVALID_PAYLOAD: dict[str, Any] = {
+    "ticker": 12345,
+    "trade_date": "2026-07-15",
+}
+
 # Keep the regex intentionally small and UI-oriented.  The fallback marker is
 # useful because the initial HTML of an SPA often contains no rendered error.
 ERROR_MARKERS = re.compile(
-    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|加载热力图失败|加载选股热度失败|加载概念板块失败|加载涨停归因失败|加载 4 段式报告失败|加载4段式报告失败|加载持仓失败|加载流水失败|加载配置失败|加载业绩归因失败|加载预警规则失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|板块轮动|涨停|无概念板块|保存失败|请求失败|批量分析失败|批量提交失败|bulk analysis failed|提交失败|加载定时失败|错误|Error|error|Invalid|invalid|"
-    r"仓位|portfolio|定时|schedule|Validation|validation|Exception|exception|Traceback|traceback|404|422|502)",
+    r"(?:加载日志失败|加载历史失败|加载设置失败|加载走势图失败|加载热力图失败|加载选股热度失败|加载概念板块失败|加载涨停归因失败|加载 4 段式报告失败|加载4段式报告失败|加载持仓失败|加载流水失败|加载配置失败|加载业绩归因失败|加载预警规则失败|加载分析失败|无 K 线数据|无K线数据|实时报价暂不可用|实时报价拉取失败|板块轮动|涨停|无概念板块|保存失败|请求失败|批量分析失败|批量提交失败|bulk analysis failed|提交失败|加载定时失败|错误|Error|error|Invalid|invalid|"
+    r"仓位|portfolio|定时|schedule|分析|analyze|Validation|validation|Exception|exception|Traceback|traceback|404|422|502)",
     re.IGNORECASE,
 )
 TAG_RE = re.compile(r"<[^>]+>")
@@ -205,6 +233,9 @@ def _api_fault(page: str, cfg: dict[str, str]) -> tuple[int | None, str]:
       * ``schedule`` → ``POST /api/schedule/create`` with
         ``SCHEDULE_INVALID_PAYLOAD`` (cron_expr="not a cron" — backend
         ``_validate_cron`` raises ValueError → HTTP 422).
+      * ``analyze`` → ``POST /api/analyze`` with ``ANALYZE_INVALID_PAYLOAD``
+        (ticker=12345 — Pydantic ``AnalyzeRequest.ticker: str`` rejects the
+        integer → HTTP 422).
       * ``history`` / ``logs`` / ``chart`` / ``sector`` / ``portfolio`` → ``GET``
         with bad query params (``limit=invalid``, ``ticker=INVALID_TICKER_NONEXIST``,
         ``top_n=abc``, ``/api/portfolio/import/detect`` missing file_path).
@@ -233,6 +264,19 @@ def _api_fault(page: str, cfg: dict[str, str]) -> tuple[int | None, str]:
                 response = requests.post(
                     cfg["fault_url"],
                     json=SCHEDULE_INVALID_PAYLOAD,
+                    timeout=TIMEOUT_SECONDS,
+                    headers={"User-Agent": "parity-fault-inject/2"},
+                )
+            elif page == "analyze":
+                # Analyze fault: send a JSON body with a malformed ticker
+                # (3 chars instead of 6).  The backend ``start_analysis``
+                # ticker-format validator raises ValueError before any
+                # analysis is dispatched, so the API returns HTTP 422
+                # deterministically.  Mirrors the schedule contract: clean
+                # 422 without touching any state.
+                response = requests.post(
+                    cfg["fault_url"],
+                    json=ANALYZE_INVALID_PAYLOAD,
                     timeout=TIMEOUT_SECONDS,
                     headers={"User-Agent": "parity-fault-inject/2"},
                 )
@@ -435,9 +479,40 @@ const [reactUrl, streamlitUrl, pageKey, executablePath] = process.argv.slice(3);
         });
       });
     }
+    if (pageKey === 'analyze' && label === 'react') {
+      // Intercept POST /api/analyze so React's AnalyzePage reliably surfaces
+      // the destructive error banner (analyze-form-error) on first paint —
+      // analogous to the schedule/batch pattern.  The /analyze URL alone
+      // would land on a healthy recent-list page (no auto-submit), so
+      // without this route the React default render would never call the
+      // POST endpoint and the form-error banner would never appear.
+      await page.route(url => {
+        try {
+          const parsed = new URL(String(url));
+          return parsed.hostname === 'localhost'
+            && parsed.pathname === '/api/analyze'
+            && parsed.search === '';
+        } catch (_) {
+          return false;
+        }
+      }, async route => {
+        await route.fulfill({
+          status: 422,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            detail: [{
+              type: 'value_error',
+              loc: ['body', 'ticker'],
+              msg: 'invalid ticker format: 123 (expected 6-digit code or Chinese name)',
+              input: '123',
+            }],
+          }),
+        });
+      });
+    }
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForTimeout(1500);
-    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [data-testid="chart-kline-error"], [data-testid="chart-empty"], [data-testid="sector-heatmap-error"], [data-testid="sector-top-stocks-error"], [data-testid="sector-concepts-error"], [data-testid="sector-limit-up-error"], [data-testid="sector-digest-error"], [data-testid="batch-submit-error"], [data-testid="schedule-form-error"], [role="alert"]');
+    const errorLocator = page.locator('[data-testid="history-error"], [data-testid="logs-tasks-error"], [data-testid="chart-kline-error"], [data-testid="chart-empty"], [data-testid="sector-heatmap-error"], [data-testid="sector-top-stocks-error"], [data-testid="sector-concepts-error"], [data-testid="sector-limit-up-error"], [data-testid="sector-digest-error"], [data-testid="batch-submit-error"], [data-testid="schedule-form-error"], [data-testid="analyze-form-error"], [role="alert"]');
     let text = '';
     if (await errorLocator.count()) text = await errorLocator.first().innerText();
     if (!text) text = await page.locator('body').innerText();
@@ -514,6 +589,7 @@ _FAULT_MARKERS = {
     "batch": "fault_diff_batch",
     "portfolio": "fault_diff_portfolio",
     "schedule": "fault_diff_schedule",
+    "analyze": "fault_diff_analyze",
 }
 
 

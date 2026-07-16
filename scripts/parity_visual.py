@@ -103,6 +103,14 @@ PAGE_REGISTRY: dict[str, dict[str, object]] = {
         "out_streamlit": Path("/tmp/streamlit_schedule_page.png"),
         "out_diff": Path("/tmp/schedule_visual_diff.png"),
     },
+    "analyze": {
+        "react_url": "http://localhost:5173/analyze",
+        "streamlit_url": "http://localhost:8501/analyze",
+        "streamlit_button": "分析",
+        "out_react": Path("/tmp/react_analyze_page.png"),
+        "out_streamlit": Path("/tmp/streamlit_analyze_page.png"),
+        "out_diff": Path("/tmp/analyze_visual_diff.png"),
+    },
 }
 
 
@@ -457,6 +465,26 @@ PAGE_STRUCTURAL: dict[str, dict[str, object]] = {
             "schedule_detail": [["上次运行", "状态"], ["next_run", "下次运行"]],
             "schedule_form": [["Cron", "cron"], ["ticker", "Ticker"], ["通知", "notify"]],
             "notifier": [["WeCom", "Email"], ["Desktop", "Log"]],
+        },
+    },
+    "analyze": {
+        "label": "analyze page",
+        "selector_kind_react": "analyze_page",
+        "regions": {
+            # Phase 2.9 — 单股投研分析入口 (单 ticker / 7 analyst / Bull/Bear 辩论).
+            # Both React AnalyzePage and Streamlit ``web/components/analyze_panel.py``
+            # consume the same backend ``backend.api.analyze`` + ``LogStore.recent_runs``
+            # singleton. We assert the 5 functional regions that both surfaces expose:
+            #   1. identity — emoji + 中文标题 + 关键词
+            #   2. analysis_form — ticker input + 深度/快讯 分析 + 提交按钮
+            #   3. progress — 进度条 + 当前步骤 + 阶段标签
+            #   4. report — 报告 markdown 渲染 + 决策/置信度
+            #   5. workspace — 历史任务列表 + 状态徽章 + 删除/重跑
+            "identity": ["📝", "分析", "analyze"],
+            "analysis_form": [["ticker", "Ticker"], ["深度", "快讯"], ["提交", "Submit"]],
+            "progress": [["进度", "Progress"], ["阶段", "Phase"], ["当前", "Current"]],
+            "report": [["报告", "Report"], ["决策", "Decision"], ["置信", "Confidence"]],
+            "workspace": [["历史", "History"], ["状态", "Status"], ["重跑", "Re-run"]],
         },
     },
 }
