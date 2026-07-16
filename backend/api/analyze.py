@@ -115,9 +115,15 @@ def get_analyze_report(analysis_id: str) -> AnalyzeReport:
     store = get_history_store()
     entry = store.get(analysis_id)
     if entry is None:
+        # P2.10 hotfix: friendlier 404 — React Query may hold a stale
+        # analysis_id from an old session; explain in user-facing Chinese so
+        # the AnalyzePage can render a banner + offer "go back to history".
         raise HTTPException(
             status_code=404,
-            detail=f"history entry {analysis_id!r} not found",
+            detail=(
+                f"分析 {analysis_id!r} 不存在或已过期, "
+                "请从历史列表选择新分析"
+            ),
         )
 
     results_path = entry.results_path or ""
@@ -139,8 +145,8 @@ def get_analyze_report(analysis_id: str) -> AnalyzeReport:
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    f"report not found for {analysis_id!r} "
-                    f"(results_path={results_path!r})"
+                    f"分析 {analysis_id!r} 的报告文件丢失 "
+                    f"(results_path={results_path!r}), 请重跑该分析"
                 ),
             )
 

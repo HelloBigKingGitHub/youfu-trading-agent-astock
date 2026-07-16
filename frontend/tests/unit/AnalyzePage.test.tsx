@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { ToastProvider } from '@/components/ui/toast';
 
 const { MOCK_RECENT, MOCK_PROGRESS, MOCK_REPORT } = vi.hoisted(() => ({
   MOCK_RECENT: [
@@ -150,8 +151,18 @@ vi.mock('@tanstack/react-query', async () => {
 import AnalyzePage from '@/pages/AnalyzePage';
 
 describe('AnalyzePage', () => {
+  // P2.10 — AnalyzePage now uses useToast() for stale-ID fallback; wrap each
+  // render with ToastProvider so the toast context exists in the test.
+  function renderPage() {
+    return render(
+      <ToastProvider>
+        <AnalyzePage />
+      </ToastProvider>,
+    );
+  }
+
   it('renders the new tab by default with the analysis form', async () => {
-    render(<AnalyzePage />);
+    renderPage();
 
     expect(screen.getByTestId('analyze-page')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '📝 单股分析', level: 1 })).toBeInTheDocument();
@@ -170,7 +181,7 @@ describe('AnalyzePage', () => {
   });
 
   it('switches to the progress tab and renders the 7 stage cards', async () => {
-    render(<AnalyzePage />);
+    renderPage();
     screen.getByTestId('analyze-tab-progress').click();
     await waitFor(() => expect(screen.getByTestId('analysis-progress')).toBeInTheDocument());
     expect(screen.getByTestId('analysis-stage-market')).toBeInTheDocument();
@@ -179,7 +190,7 @@ describe('AnalyzePage', () => {
   });
 
   it('switches to the history tab and renders the recent analysis table', async () => {
-    render(<AnalyzePage />);
+    renderPage();
     screen.getByTestId('analyze-tab-history').click();
     await waitFor(() => expect(screen.getByTestId('analysis-recent-table')).toBeInTheDocument());
     expect(screen.getByTestId('analysis-recent-row-a-001')).toBeInTheDocument();
@@ -187,7 +198,7 @@ describe('AnalyzePage', () => {
   });
 
   it('switches to the workspace tab and renders 7 analyst cards', async () => {
-    render(<AnalyzePage />);
+    renderPage();
     screen.getByTestId('analyze-tab-workspace').click();
     await waitFor(() => expect(screen.getByTestId('analysis-workspace')).toBeInTheDocument());
     expect(screen.getByTestId('analysis-workspace-card-market_report')).toBeInTheDocument();
@@ -195,7 +206,7 @@ describe('AnalyzePage', () => {
   });
 
   it('switches to the report tab and renders the 7 trader report cards', async () => {
-    render(<AnalyzePage />);
+    renderPage();
     screen.getByTestId('analyze-tab-report').click();
     await waitFor(() => expect(screen.getByTestId('analysis-report')).toBeInTheDocument());
     expect(screen.getByTestId('analysis-report-card-market_report')).toBeInTheDocument();

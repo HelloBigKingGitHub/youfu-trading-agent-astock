@@ -37,6 +37,7 @@ import { AnalysisProgress } from '@/components/analyze/analysis-progress';
 import { AnalysisReport } from '@/components/analyze/analysis-report';
 import { AnalysisRecentList } from '@/components/analyze/analysis-recent-list';
 import { AnalysisWorkspace } from '@/components/analyze/analysis-workspace';
+import { useToast } from '@/components/ui/toast';
 
 type TabKey = 'new' | 'progress' | 'report' | 'history' | 'workspace';
 
@@ -57,11 +58,26 @@ const TABS: TabDef[] = [
 const DEFAULT_TAB: TabKey = 'new';
 const POLL_INTERVAL_MS = 2000;
 
+/**
+ * P2.10 hotfix — a guard against React Query holding a stale ``analysis_id``
+ * (typical cause: user navigated away mid-analysis, browser cache persisted a
+ * finished report ID that has since been deleted from HistoryStore, or the
+ * Streamlit-era URL got bookmarked). When we detect either a 404 from the
+ * report endpoint OR an ID that isn't in the recent list, we drop the stale
+ * cache, clear the active ID, and bounce the user back to the history tab
+ * with a toast explaining why.
+ */
+function isReportNotFoundError(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return /404/.test(message);
+}
+
 export function AnalyzePage() {
   const [activeTab, setActiveTab] = React.useState<TabKey>(DEFAULT_TAB);
   const [activeAnalysisId, setActiveAnalysisId] = React.useState<string | null>(null);
   const [formError, setFormError] = React.useState<string | null>(null);
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   // Recent list — always live so the history tab can show latest.
   const recentQuery = useQuery({
@@ -87,14 +103,70 @@ export function AnalyzePage() {
     refetchOnWindowFocus: false,
   });
 
+  /**
+   * P2.10 hotfix — if the active ID is unknown to the recent list (or 404 on
+   * the report endpoint), clear it and bounce back to history. Also wipe the
+   * React Query cache for that key so we don't keep retrying a dead URL.
+   */
+  const fallbackToHistory = React.useCallback(
+    (staleId: string, message: string) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[AnalyzePage] stale analysis_id ${staleId} → fallback: ${message}`);
+      queryClient.removeQueries({ queryKey: ['analyze-report', staleId] });
+      queryClient.removeQueries({ queryKey: ['analyze-progress', staleId] });
+      setActiveAnalysisId(null);
+      setActiveTab('history');
+      toast({
+        title: '分析不存在或已过期',
+        description: message,
+        variant: 'warning',
+      });
+    },
+    [queryClient, toast],
+  );
+
+  // P2.10 — proactively validate the active ID against the recent list.
+  // If it's a stale ID the backend will 404; instead of firing the request,
+  // short-circuit to the fallback before any network call happens.
+  React.useEffect(() => {
+    if (!activeAnalysisId) return;
+    if (!recentQuery.data) return; // recent list still loading
+    const known = recentQuery.data.some((it) => it.analysis_id === activeAnalysisId);
+    if (!known) {
+      fallbackToHistory(
+        activeAnalysisId,
+        '该分析 ID 不在历史列表中, 已自动跳转, 请从历史列表选择新分析',
+      );
+    }
+  }, [activeAnalysisId, recentQuery.data, fallbackToHistory]);
+
   // Full report (lazy — only when user clicks 报告 tab).
   const reportQuery = useQuery({
     queryKey: ['analyze-report', activeAnalysisId],
     queryFn: () => getAnalysisReport(activeAnalysisId!),
-    enabled: Boolean(activeAnalysisId) && activeTab === 'report',
+    enabled:
+      Boolean(activeAnalysisId) &&
+      activeTab === 'report' &&
+      // P2.10 — only fire if the recent list confirms this ID exists; the
+      // effect above is the source of truth for the fallback.
+      (recentQuery.data?.some((it) => it.analysis_id === activeAnalysisId) ?? false),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
+
+  // P2.10 — React Query errs with a plain string from getAnalysisReport; on
+  // 404 we bounce back to history. This catches the case where the recent list
+  // was stale (entry deleted between render and fetch).
+  React.useEffect(() => {
+    if (!reportQuery.error) return;
+    const msg = reportQuery.error instanceof Error ? reportQuery.error.message : null;
+    if (activeAnalysisId && isReportNotFoundError(msg)) {
+      fallbackToHistory(
+        activeAnalysisId,
+        '找不到该分析 (后端 404), 已自动跳回历史列表',
+      );
+    }
+  }, [reportQuery.error, activeAnalysisId, fallbackToHistory]);
 
   const startMut = useMutation({
     mutationFn: (payload: AnalyzeRequest) => startAnalysis(payload),
@@ -114,6 +186,20 @@ export function AnalyzePage() {
   }
 
   function handleSelectRecent(analysisId: string) {
+    // P2.10 — extra safety: only set IDs that are confirmed in the recent list.
+    // User can still type a manual ID (none currently exposed); this prevents
+    // any future call-site from injecting a stale value silently.
+    const known = recentItems.some((it) => it.analysis_id === analysisId);
+    if (!known) {
+      // eslint-disable-next-line no-console
+      console.warn(`[AnalyzePage] refused to select unknown analysis_id ${analysisId}`);
+      toast({
+        title: '无效的分析 ID',
+        description: '请从历史列表选择一项',
+        variant: 'warning',
+      });
+      return;
+    }
     setActiveAnalysisId(analysisId);
     setActiveTab('report');
   }
