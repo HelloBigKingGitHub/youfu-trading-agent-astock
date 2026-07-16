@@ -59,6 +59,22 @@ const DEFAULT_TAB: TabKey = 'new';
 const POLL_INTERVAL_MS = 2000;
 
 /**
+ * P2.12 hotfix — predicate that decides whether `activeAnalysisId` is
+ * usable as a path segment for `/api/analyze/{id}` and
+ * `/api/analyze/{id}/report`. Returns false for null/undefined, the empty
+ * string, and the literal JS sentinel strings "null" / "undefined" (which
+ * arrive via JSON round-trip when callers forget to validate user input).
+ */
+function isUsableAnalysisId(id: string | null | undefined): id is string {
+  return (
+    typeof id === 'string' &&
+    id.length > 0 &&
+    id !== 'null' &&
+    id !== 'undefined'
+  );
+}
+
+/**
  * P2.10 hotfix — a guard against React Query holding a stale ``analysis_id``
  * (typical cause: user navigated away mid-analysis, browser cache persisted a
  * finished report ID that has since been deleted from HistoryStore, or the
@@ -88,10 +104,26 @@ export function AnalyzePage() {
   });
 
   // Live progress (only when we have an active analysis).
+  // P2.12 hotfix — three layers of defense against the `/api/analyze/null`
+  // 404 storm:
+  //   1. `enabled` rejects null / undefined / "null" / "undefined" up front
+  //   2. queryFn double-checks (catches HMR / refetchInterval races where
+  //      React Query v5 fires the closure even after `enabled` flipped)
+  //   3. queryKey uses a sentinel so the cache slot stays distinct from a
+  //      hypothetical real-id request, preventing stale-key reuse
   const progressQuery = useQuery({
-    queryKey: ['analyze-progress', activeAnalysisId],
-    queryFn: () => getAnalysis(activeAnalysisId!),
-    enabled: Boolean(activeAnalysisId),
+    queryKey: ['analyze-progress', activeAnalysisId ?? '__none__'],
+    queryFn: () => {
+      if (!isUsableAnalysisId(activeAnalysisId)) {
+        // Should never run when enabled=false; if it does, fail loudly
+        // so React Query records the error instead of triggering a 404.
+        throw new Error(
+          `[AnalyzePage] progress queryFn called with invalid id: ${String(activeAnalysisId)}`,
+        );
+      }
+      return getAnalysis(activeAnalysisId);
+    },
+    enabled: isUsableAnalysisId(activeAnalysisId) && activeTab === 'progress',
     refetchInterval: (q) => {
       const status = (q.state.data as { status?: string } | undefined)?.status;
       if (status === 'ok' || status === 'error' || status === 'complete') {
@@ -128,8 +160,10 @@ export function AnalyzePage() {
   // P2.10 — proactively validate the active ID against the recent list.
   // If it's a stale ID the backend will 404; instead of firing the request,
   // short-circuit to the fallback before any network call happens.
+  // P2.12 hotfix — guard also rejects "null" / "undefined" literal strings
+  // (a JS quirk when JSON round-trip happens upstream).
   React.useEffect(() => {
-    if (!activeAnalysisId) return;
+    if (!isUsableAnalysisId(activeAnalysisId)) return;
     if (!recentQuery.data) return; // recent list still loading
     const known = recentQuery.data.some((it) => it.analysis_id === activeAnalysisId);
     if (!known) {
@@ -141,11 +175,20 @@ export function AnalyzePage() {
   }, [activeAnalysisId, recentQuery.data, fallbackToHistory]);
 
   // Full report (lazy — only when user clicks 报告 tab).
+  // P2.12 hotfix — same three-layer defense as progressQuery above; plus
+  // the P2.10 "ID must appear in recent list" gate stays intact.
   const reportQuery = useQuery({
-    queryKey: ['analyze-report', activeAnalysisId],
-    queryFn: () => getAnalysisReport(activeAnalysisId!),
+    queryKey: ['analyze-report', activeAnalysisId ?? '__none__'],
+    queryFn: () => {
+      if (!isUsableAnalysisId(activeAnalysisId)) {
+        throw new Error(
+          `[AnalyzePage] report queryFn called with invalid id: ${String(activeAnalysisId)}`,
+        );
+      }
+      return getAnalysisReport(activeAnalysisId);
+    },
     enabled:
-      Boolean(activeAnalysisId) &&
+      isUsableAnalysisId(activeAnalysisId) &&
       activeTab === 'report' &&
       // P2.10 — only fire if the recent list confirms this ID exists; the
       // effect above is the source of truth for the fallback.
@@ -157,10 +200,11 @@ export function AnalyzePage() {
   // P2.10 — React Query errs with a plain string from getAnalysisReport; on
   // 404 we bounce back to history. This catches the case where the recent list
   // was stale (entry deleted between render and fetch).
+  // P2.12 hotfix — guard also rejects "null"/"undefined" sentinel strings.
   React.useEffect(() => {
     if (!reportQuery.error) return;
     const msg = reportQuery.error instanceof Error ? reportQuery.error.message : null;
-    if (activeAnalysisId && isReportNotFoundError(msg)) {
+    if (isUsableAnalysisId(activeAnalysisId) && isReportNotFoundError(msg)) {
       fallbackToHistory(
         activeAnalysisId,
         '找不到该分析 (后端 404), 已自动跳回历史列表',
@@ -189,6 +233,17 @@ export function AnalyzePage() {
     // P2.10 — extra safety: only set IDs that are confirmed in the recent list.
     // User can still type a manual ID (none currently exposed); this prevents
     // any future call-site from injecting a stale value silently.
+    // P2.12 hotfix — also reject the JS sentinel strings "null"/"undefined".
+    if (!isUsableAnalysisId(analysisId)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[AnalyzePage] refused to select invalid analysis_id ${analysisId}`);
+      toast({
+        title: '无效的分析 ID',
+        description: '请从历史列表选择一项',
+        variant: 'warning',
+      });
+      return;
+    }
     const known = recentItems.some((it) => it.analysis_id === analysisId);
     if (!known) {
       // eslint-disable-next-line no-console

@@ -18,6 +18,28 @@ function _url(path: string): string {
   return `${API_BASE}${path}`;
 }
 
+/**
+ * P2.12 hotfix — guard against /api/analyze/null/... 404 storms.
+ *
+ * Root cause: the React Query `queryFn` closures sometimes fire even when
+ * `enabled` is false (React Query v5 HMR edge case, refetchInterval race
+ * where activeAnalysisId flips to null mid-flight, etc.). When that happens
+ * the fetch URL becomes `/api/analyze/null` or `/api/analyze/null/report`
+ * — both 404. We throw here BEFORE constructing the URL, so the network
+ * layer never sees a malformed request and the recent list / toast /
+ * fallback effect can drive the actual recovery.
+ *
+ * Treats as invalid: null, undefined, empty string, the literal strings
+ * "null" / "undefined" (which the JS URL API happily forwards when a
+ * caller forgot to JSON.parse).
+ */
+export function safeAnalysisId(id: string | null | undefined): string {
+  if (!id || id === 'null' || id === 'undefined' || id.trim() === '') {
+    throw new Error(`invalid analysis_id: ${String(id)}`);
+  }
+  return id;
+}
+
 // ── request / response shapes ────────────────────────────────────────────────
 
 /** Pydantic mirror: AnalyzeRequest (backend/models/request.py). */
@@ -99,12 +121,16 @@ export async function startAnalysis(payload: AnalyzeRequest): Promise<AnalyzeRes
 // ── GET /api/analyze/{id} ────────────────────────────────────────────────────
 
 export async function getAnalysis(analysisId: string): Promise<ProgressResponse> {
+  // P2.12 hotfix — refuse to build the URL with an invalid id so we never
+  // hit `/api/analyze/null` even if a React Query queryFn runs while
+  // enabled=false (HMR / refetchInterval race).
+  const safeId = safeAnalysisId(analysisId);
   const res = await fetch(
-    _url(`/api/analyze/${encodeURIComponent(analysisId)}`),
+    _url(`/api/analyze/${encodeURIComponent(safeId)}`),
     { credentials: 'omit' },
   );
   if (!res.ok) {
-    throw new Error(`GET /api/analyze/${analysisId} ${res.status}: ${await res.text()}`);
+    throw new Error(`GET /api/analyze/${safeId} ${res.status}: ${await res.text()}`);
   }
   return (await res.json()) as ProgressResponse;
 }
@@ -112,12 +138,14 @@ export async function getAnalysis(analysisId: string): Promise<ProgressResponse>
 // ── GET /api/analyze/{id}/report ─────────────────────────────────────────────
 
 export async function getAnalysisReport(analysisId: string): Promise<AnalyzeReport> {
+  // P2.12 hotfix — see getAnalysis().
+  const safeId = safeAnalysisId(analysisId);
   const res = await fetch(
-    _url(`/api/analyze/${encodeURIComponent(analysisId)}/report`),
+    _url(`/api/analyze/${encodeURIComponent(safeId)}/report`),
     { credentials: 'omit' },
   );
   if (!res.ok) {
-    throw new Error(`GET /api/analyze/${analysisId}/report ${res.status}: ${await res.text()}`);
+    throw new Error(`GET /api/analyze/${safeId}/report ${res.status}: ${await res.text()}`);
   }
   return (await res.json()) as AnalyzeReport;
 }
