@@ -72,39 +72,74 @@ def _run_analysis(
         "final_trade_decision": "pm",
     }
 
-    for chunk in graph.graph.stream(init_state, **args):
-        last_chunk = chunk
+    # P2.23 hotfix — hard timeout guard.
+    #
+    # The user reported analysis 600595_2026-07-17_df9be2bf where the LLM
+    # structured-output retry path in the Portfolio Manager stage wedged
+    # for 10+ minutes (retry-as-free-text hangs), the for-loop over
+    # graph.graph.stream() never yielded a final chunk that completed the
+    # stream, and tracker.mark_complete() never ran. Without this guard,
+    # the thread runs forever, the UI shows "running" with no signal, and
+    # users have no recourse. We now enforce a hard 10-minute ceiling:
+    # any chunk that arrives after the ceiling triggers a TimeoutError
+    # that we catch and convert to tracker.mark_error(), so the user
+    # always sees a definitive error/complete state.
+    MAX_RUN_SEC = 600  # 10 minutes — matches STUCK_THRESHOLD_SEC in history_store.py
 
-        # Update current stage based on chunk keys
-        for report_key, stage_id in stage_map.items():
-            content = chunk.get(report_key, "")
-            if content and tracker.stage_status(stage_id) != "done":
-                if tracker.current_stage != stage_id:
-                    tracker.mark_stage_active(stage_id)
-                tracker.mark_stage_done(stage_id, str(content)[:500])
-                # P2.21 hotfix — previously this cleared current_stage to ""
-                # after every mark_stage_done, which made the React progress
-                # UI show no current stage during stage transitions (the
-                # user reported the progress tab was blank for 8+ hours).
-                # We now KEEP current_stage pointing at the just-finished
-                # stage until the next stage's chunk arrives and overwrites
-                # it via the `if tracker.current_stage != stage_id` branch
-                # above. The frontend (修 4) additionally infers current_stage
-                # from completed_stages when this is empty for older history
-                # entries, so we don't need to write "" anymore.
-                # tracker.mark_stage_active("")  # ← removed in P2.21
+    try:
+        for chunk in graph.graph.stream(init_state, **args):
+            last_chunk = chunk
 
-        # Update stats
-        s = stats.get_stats()
-        tracker.update_stats(s["llm_calls"], s["tool_calls"], s["tokens_in"], s["tokens_out"])
+            # Hard timeout check — checked once per chunk, which is
+            # bounded by the graph's own yield rate (every node boundary).
+            if time_module.time() - tracker.start_time > MAX_RUN_SEC:
+                raise TimeoutError(
+                    f"分析超过 {MAX_RUN_SEC}s 硬上限, 强制终止 (P2.23 hotfix, "
+                    f"最后阶段: {tracker.current_stage or 'unknown'})"
+                )
 
-        time_module.sleep(0.5)
+            # Update current stage based on chunk keys
+            for report_key, stage_id in stage_map.items():
+                content = chunk.get(report_key, "")
+                if content and tracker.stage_status(stage_id) != "done":
+                    if tracker.current_stage != stage_id:
+                        tracker.mark_stage_active(stage_id)
+                    tracker.mark_stage_done(stage_id, str(content)[:500])
+                    # P2.21 hotfix — previously this cleared current_stage to ""
+                    # after every mark_stage_done, which made the React progress
+                    # UI show no current stage during stage transitions (the
+                    # user reported the progress tab was blank for 8+ hours).
+                    # We now KEEP current_stage pointing at the just-finished
+                    # stage until the next stage's chunk arrives and overwrites
+                    # it via the `if tracker.current_stage != stage_id` branch
+                    # above. The frontend (修 4) additionally infers current_stage
+                    # from completed_stages when this is empty for older history
+                    # entries, so we don't need to write "" anymore.
+                    # tracker.mark_stage_active("")  # ← removed in P2.21
 
-    signal = graph.process_signal(last_chunk.get("final_trade_decision", ""))
-    tracker.mark_complete(last_chunk, signal)
+            # Update stats
+            s = stats.get_stats()
+            tracker.update_stats(s["llm_calls"], s["tool_calls"], s["tokens_in"], s["tokens_out"])
 
-    graph.ticker = tracker.ticker
-    graph._log_state(tracker.trade_date, last_chunk)
+            time_module.sleep(0.5)
+
+        signal = graph.process_signal(last_chunk.get("final_trade_decision", ""))
+        tracker.mark_complete(last_chunk, signal)
+
+        graph.ticker = tracker.ticker
+        graph._log_state(tracker.trade_date, last_chunk)
+    except TimeoutError as e:
+        # P2.23 hotfix — hard timeout, mark error so the user sees a
+        # definitive failure rather than "running" forever.
+        tracker.mark_error(str(e))
+    except Exception:
+        # Re-raise so the global thread-exception hook (and any
+        # future error telemetry) still sees the original traceback.
+        # tracker.mark_error has already been called by the analysis
+        # code path itself in most cases; if not, the in-memory
+        # tracker will simply stay in running state until the next
+        # process restart sweeps it as a zombie (P2.14).
+        raise
 
 
 def start_analysis(
