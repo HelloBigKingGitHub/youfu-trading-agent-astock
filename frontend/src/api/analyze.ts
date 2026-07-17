@@ -135,6 +135,35 @@ export async function getAnalysis(analysisId: string): Promise<ProgressResponse>
   return (await res.json()) as ProgressResponse;
 }
 
+// ── GET /api/analyze/{id}/progress ───────────────────────────────────────────
+//
+// P2.24 hotfix — /api/analyze/{id} returns the FULL AnalysisResult
+// (market_report / sentiment_report / ... / debate_state / final_trade_decision)
+// and intentionally OMITS the per-stage ``current_stage`` / ``stage_reports`` /
+// ``signal`` fields that the React ``AnalysisProgress`` and ``AnalysisWorkspace``
+// components rely on. The dedicated ``/api/analyze/{id}/progress`` endpoint
+// (backend/api/progress.py) returns a slim ``ProgressResponse`` carrying those
+// fields, plus a HistoryStore fallback for analyses that have already been
+// evicted from the in-memory TrackerStore.
+//
+// Both Streamlit (analyze_panel.py) and React (AnalyzePage.tsx) now call
+// /progress for the live poll, while /report and /{id} (AnalysisResult) stay
+// reserved for the consolidated report view.
+export async function getProgress(analysisId: string): Promise<ProgressResponse> {
+  // P2.12 hotfix — refuse to build the URL with an invalid id so we never
+  // hit `/api/analyze/null/progress` even if a React Query queryFn runs while
+  // enabled=false (HMR / refetchInterval race).
+  const safeId = safeAnalysisId(analysisId);
+  const res = await fetch(
+    _url(`/api/analyze/${encodeURIComponent(safeId)}/progress`),
+    { credentials: 'omit' },
+  );
+  if (!res.ok) {
+    throw new Error(`GET /api/analyze/${safeId}/progress ${res.status}: ${await res.text()}`);
+  }
+  return (await res.json()) as ProgressResponse;
+}
+
 // ── GET /api/analyze/{id}/report ─────────────────────────────────────────────
 
 export async function getAnalysisReport(analysisId: string): Promise<AnalyzeReport> {

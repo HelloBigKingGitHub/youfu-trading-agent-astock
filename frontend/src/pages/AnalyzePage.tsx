@@ -3,10 +3,11 @@
  *
  * Five tabs driven by 4 GET endpoints + 1 POST endpoint:
  *   1. 新建     → form (POST /api/analyze on submit)
- *   2. 进度     → polling progress bar (GET /api/analyze/{id} every 2s while running)
+ *   2. 进度     → polling progress bar (GET /api/analyze/{id}/progress every 2s)
  *   3. 报告     → 7-card analyst report (GET /api/analyze/{id}/report)
  *   4. 历史     → recent list (GET /api/analyze/recent?limit=20)
- *   5. 工作区   → live 7-stage intermediate reports from /api/analyze/{id}
+ *   5. 工作区   → live 7-stage intermediate reports from the same
+ *                 /api/analyze/{id}/progress feed (current_stage + stage_reports)
  *
  * Same React Query + 5-tab inline dispatcher pattern as SchedulePage and
  * SectorPage; queries run in parallel so the first paint shows whichever
@@ -26,7 +27,7 @@ import { Button } from '@/components/ui/button';
 import { Sparkles, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
-  getAnalysis,
+  getProgress,
   getAnalysisReport,
   getRecentAnalyzes,
   startAnalysis,
@@ -118,6 +119,23 @@ export function AnalyzePage() {
   const recentItems = recentQuery.data ?? [];
 
   // Live progress (only when we have an active analysis).
+  //
+  // P2.24 hotfix — progressQuery now hits /api/analyze/{id}/progress instead
+  // of /api/analyze/{id}. /{id} returns the FULL AnalysisResult (no
+  // ``current_stage`` / ``stage_reports`` / ``signal``), so the progress bar
+  // and workspace cards rendered as undefined and the tabs looked empty.
+  // /progress returns the slim ProgressResponse shape that
+  // ``AnalysisProgress`` and ``AnalysisWorkspace`` actually consume.
+  //
+  // We also drop the ``activeTab === 'progress'`` gate from both ``enabled``
+  // and ``refetchInterval``. The workspace tab re-uses the same
+  // ``progressQuery.data`` to show intermediate stage_reports as analysts
+  // finish; if we only polled while the progress tab was active the workspace
+  // tab would always show stale or empty data, since ``refetchInterval`` only
+  // fires while ``enabled`` is true. Keeping the poll running while the user
+  // is on any tab means progress + workspace stay in sync without an extra
+  // network round-trip when the user switches back.
+  //
   // P2.13 hotfix — three layers of defense against the `/api/analyze/null`
   // 404 storm:
   //   1. `enabled` rejects null / undefined / "null" / "undefined" up front
@@ -134,11 +152,11 @@ export function AnalyzePage() {
         // state, not a request failure: do not put the query into error state.
         return null;
       }
-      return getAnalysis(activeAnalysisId);
+      return getProgress(activeAnalysisId);
     },
-    enabled: isUsableAnalysisId(activeAnalysisId) && activeTab === 'progress',
+    enabled: isUsableAnalysisId(activeAnalysisId),
     refetchInterval: (q) => {
-      if (!isUsableAnalysisId(activeAnalysisId) || activeTab !== 'progress') {
+      if (!isUsableAnalysisId(activeAnalysisId)) {
         return false;
       }
       const data = q.state.data;
