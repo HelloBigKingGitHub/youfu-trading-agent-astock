@@ -72,6 +72,23 @@ def _run_analysis(
         "final_trade_decision": "pm",
     }
 
+    stage_order = list(stage_map.values())
+
+    def _activate_next_stage(completed_stage: str) -> None:
+        """Activate the next pipeline stage as soon as one completes."""
+        try:
+            next_index = stage_order.index(completed_stage) + 1
+        except ValueError:
+            return
+        for next_stage in stage_order[next_index:]:
+            if tracker.stage_status(next_stage) != "done":
+                tracker.mark_stage_active(next_stage)
+                return
+
+    # Publish the first stage before entering LangGraph. This closes the
+    # short all-pending window between POST /api/analyze and the first chunk.
+    tracker.mark_stage_active("market")
+
     # P2.23 hotfix — hard timeout guard.
     #
     # The user reported analysis 600595_2026-07-17_df9be2bf where the LLM
@@ -104,7 +121,12 @@ def _run_analysis(
                 if content and tracker.stage_status(stage_id) != "done":
                     if tracker.current_stage != stage_id:
                         tracker.mark_stage_active(stage_id)
-                    tracker.mark_stage_done(stage_id, str(content)[:500])
+                    tracker.mark_stage_done(
+                        stage_id,
+                        str(content)[:500],
+                        report_key=report_key,
+                    )
+                    _activate_next_stage(stage_id)
                     # P2.21 hotfix — previously this cleared current_stage to ""
                     # after every mark_stage_done, which made the React progress
                     # UI show no current stage during stage transitions (the
@@ -132,13 +154,11 @@ def _run_analysis(
         # P2.23 hotfix — hard timeout, mark error so the user sees a
         # definitive failure rather than "running" forever.
         tracker.mark_error(str(e))
-    except Exception:
-        # Re-raise so the global thread-exception hook (and any
-        # future error telemetry) still sees the original traceback.
-        # tracker.mark_error has already been called by the analysis
-        # code path itself in most cases; if not, the in-memory
-        # tracker will simply stay in running state until the next
-        # process restart sweeps it as a zombie (P2.14).
+    except Exception as exc:
+        # Never leave a daemon-thread analysis stuck in ``running`` when the
+        # graph fails before it can produce a completion signal. Keep the
+        # exception class in the persisted message for actionable diagnostics.
+        tracker.mark_error(f"{type(exc).__name__}: {exc}")
         raise
 
 

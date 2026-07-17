@@ -89,6 +89,27 @@ def _run(ticker: str, trade_date: str, config: dict, tracker: ProgressTracker, a
     management so all 4 entry points (Web UI / batch API / CLI / scheduler)
     share the same H1+H2 path.
     """
+    # Streamlit 架构性 trap 防护 (v0.7.0.P0):
+    # CPython ``concurrent.futures.thread`` 在 import 时通过
+    # ``threading._register_atexit(_python_exit)`` 注册模块全局
+    # ``_shutdown=True``。一旦 streamlit 的 file watcher 检测到 web/ 下源文件
+    # 变更触发 script rerun, 进程 interpreter 进入 shutdown 阶段, 这个
+    # 全局 flag 会被永久置 True, 进程虽不退出但后续所有
+    # ThreadPoolExecutor.submit 都抛 "cannot schedule new futures after
+    # interpreter shutdown"。
+    #
+    # 关键洞察 (本地验证): ``_shutdown`` 只是 submit() 的 bool 守卫, worker
+    # threads 还在, 把 flag 重置回 False 后 ThreadPoolExecutor 就能继续
+    # 工作。所以防护策略 = 检测 + 重置, 而不是只抛错。
+    import concurrent.futures.thread as _cf_thread
+    if _cf_thread._shutdown:
+        _cf_thread._shutdown = False
+        logger.warning(
+            "Reset concurrent.futures.thread._shutdown=False (streamlit "
+            "hot-reload 触发的 _python_exit 钩子锁死了 thread pool; "
+            "已绕过, 但建议重启 streamlit 避免其他模块残留异常)."
+        )
+
     from cli.stats_handler import StatsCallbackHandler
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 

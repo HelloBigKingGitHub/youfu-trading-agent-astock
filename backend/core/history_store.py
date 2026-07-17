@@ -122,10 +122,16 @@ class HistoryStore:
         ticker: str,
         trade_date: str,
         status: str = "running",
+        analysis_id: str | None = None,
     ) -> HistoryEntry:
-        """Create a new history entry (call when analysis starts)."""
+        """Create a new history entry (call when analysis starts).
+
+        When the caller already owns an analysis id (as ``TrackerStore``
+        does), reuse it so in-memory progress and persisted history point at
+        the same entry. Direct callers retain legacy id generation.
+        """
         entry = HistoryEntry(
-            analysis_id=f"{ticker}_{trade_date}_{uuid.uuid4().hex[:8]}",
+            analysis_id=analysis_id or f"{ticker}_{trade_date}_{uuid.uuid4().hex[:8]}",
             ticker=ticker,
             trade_date=trade_date,
             status=status,
@@ -153,15 +159,21 @@ class HistoryStore:
         analysis_id: str,
         stage_id: str,
         report: str = "",
+        report_key: str | None = None,
     ) -> None:
-        """Mark a stage as done and optionally save a report snippet."""
+        """Mark a stage done and optionally save a report snippet.
+
+        ``completed_stages`` remains keyed by the pipeline stage id while
+        ``stage_reports`` uses the canonical LangGraph chunk field when one
+        is supplied.
+        """
         entry = self._read(analysis_id)
         if not entry:
             return
         if stage_id not in entry.completed_stages:
             entry.completed_stages.append(stage_id)
         if report:
-            entry.stage_reports[stage_id] = report[:500]
+            entry.stage_reports[report_key or stage_id] = report[:500]
         self._write(entry)
 
     def mark_complete(

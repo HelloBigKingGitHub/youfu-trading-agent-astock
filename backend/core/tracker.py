@@ -52,14 +52,32 @@ class AnalysisTracker:
         with self._lock:
             self.current_stage = stage_id
 
-    def mark_stage_done(self, stage_id: str, report: str = "") -> None:
+    def mark_stage_done(
+        self,
+        stage_id: str,
+        report: str = "",
+        report_key: str | None = None,
+    ) -> None:
+        """Mark a stage done and store its report.
+
+        ``stage_id`` is the pipeline stage label used by
+        ``completed_stages``. ``report_key`` is the canonical LangGraph
+        chunk field name used by ``stage_reports`` and the frontend. Legacy
+        callers that omit it continue to use ``stage_id`` as the key.
+        """
+        actual_key = report_key or stage_id
         with self._lock:
             if stage_id not in self.completed_stages:
                 self.completed_stages.append(stage_id)
             if report:
-                self.stage_reports[stage_id] = report
+                self.stage_reports[actual_key] = report
             self.current_stage = ""
-        get_history_store().mark_stage_done(self.analysis_id, stage_id, report)
+        get_history_store().mark_stage_done(
+            self.analysis_id,
+            stage_id,
+            report,
+            report_key=actual_key,
+        )
 
     def mark_complete(self, final_state: dict, signal: str) -> None:
         with self._lock:
@@ -149,7 +167,12 @@ class TrackerStore:
         )
         with self._store_lock:
             self._trackers[analysis_id] = tracker
-        get_history_store().create(ticker, trade_date, status="running")
+        get_history_store().create(
+            ticker,
+            trade_date,
+            status="running",
+            analysis_id=analysis_id,
+        )
         return analysis_id, tracker
 
     def get(self, analysis_id: str) -> AnalysisTracker | None:

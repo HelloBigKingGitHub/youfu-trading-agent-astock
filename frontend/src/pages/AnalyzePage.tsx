@@ -168,7 +168,8 @@ export function AnalyzePage() {
       return POLL_INTERVAL_MS;
     },
     staleTime: 0,
-    refetchIntervalInBackground: false,
+    refetchOnMount: 'always',
+    refetchIntervalInBackground: true,
     refetchOnWindowFocus: false,
   });
 
