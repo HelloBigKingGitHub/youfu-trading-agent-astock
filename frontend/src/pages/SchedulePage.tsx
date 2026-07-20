@@ -211,9 +211,8 @@ export function SchedulePage() {
             <h1 className="text-inherit font-inherit">⏰ 定时分析</h1>
           </CardTitle>
           <CardDescription>
-            Cron 调度 + ticker 源 (持仓 / 自选股 / 手动) + 4 渠道通知
-            (WeCom / Email / Desktop / Log) · 引擎 backend.core.scheduler
-            (单例 + 60s polling) · 共享 batch_job_queue + portfolio_store
+            按 cron 表达式定时调度, 标的池支持持仓 / 自选股 / 手动列表。
+            完成后通过企业微信 / 邮件 / 桌面通知 / 运行日志四个渠道送达。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -384,9 +383,7 @@ export function SchedulePage() {
           </div>
 
           <p className="text-xs text-text-tertiary">
-            定时分析模块基于 Schedule + ScheduleRun 单例 + croniter, 与 Streamlit
-            <code>web/components/schedule_panel.py</code> 共用同一业务函数
-            <code>backend.core.scheduler</code>, 0 改业务层。
+            调度引擎每分钟巡检一次, 下次执行时间精确到分钟。
           </p>
         </CardContent>
       </Card>

@@ -141,8 +141,8 @@ export function SectorPage() {
             <h1 className="text-inherit font-inherit">📈 板块轮动</h1>
           </CardTitle>
           <CardDescription>
-            每日板块行情 + 选股热度 + 涨停归因 + 概念反查 · 数据源 东财 np-ipick
-            + 同花顺 + 百度 PAE · 24h digest cache (与 Streamlit 共享)
+            每日板块行情 + 选股热度 + 涨停归因 + 概念反查。
+            综合热点选股、涨停归因与概念分类, 形成 4 段式市场复盘。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -306,9 +306,7 @@ export function SectorPage() {
           </div>
 
           <p className="text-xs text-text-tertiary">
-            板块轮动日报基于东财 np-ipick 选股热度 + 同花顺涨停归因 + 百度 PAE 概念反查,
-            与 Streamlit <code>web/components/sector_panel.py</code> 共用同一业务函数
-            <code>get_sector_rotation_digest</code>, 不消耗 LLM token.
+            基于当日热点选股、涨停归因与概念反查聚类生成, 无需调用模型, 通常 15-25 秒完成。
           </p>
         </CardContent>
       </Card>

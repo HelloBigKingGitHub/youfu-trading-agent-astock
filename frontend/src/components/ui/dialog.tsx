@@ -28,6 +28,11 @@ export function Dialog({
   testId,
   footer,
 }: DialogProps) {
+  // Stable IDs per dialog open cycle so a11y bindings don't drift across
+  // re-renders. ``React.useId`` is stable across SSR/CSR boundaries.
+  const titleId = React.useId();
+  const descriptionId = React.useId();
+
   // Escape closes; backdrop click closes; body scroll lock while open.
   React.useEffect(() => {
     if (!open) return;
@@ -49,6 +54,8 @@ export function Dialog({
     <div
       role="dialog"
       aria-modal="true"
+      aria-labelledby={titleId}
+      aria-describedby={description ? descriptionId : undefined}
       data-testid={testId}
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
     >
@@ -66,9 +73,13 @@ export function Dialog({
       >
         <div className="flex items-start justify-between gap-4 p-6 border-b border-border-1">
           <div>
-            <h2 className="text-xl font-semibold leading-tight text-text-primary">{title}</h2>
+            <h2 id={titleId} className="text-xl font-semibold leading-tight text-text-primary">
+              {title}
+            </h2>
             {description && (
-              <p className="text-sm text-text-secondary mt-1.5">{description}</p>
+              <p id={descriptionId} className="text-sm text-text-secondary mt-1.5">
+                {description}
+              </p>
             )}
           </div>
           <button

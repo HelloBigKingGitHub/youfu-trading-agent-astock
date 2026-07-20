@@ -16,7 +16,7 @@ export function Header({ title, subtitle }: HeaderProps) {
         </h1>
         {subtitle && <p className="mt-1 text-sm text-text-secondary">{subtitle}</p>}
       </div>
-      <div className="text-xs text-text-tertiary font-mono">React SPA · Phase 1</div>
+      <div className="text-xs text-text-tertiary font-mono">v0.7.0-dev</div>
     </header>
   );
 }

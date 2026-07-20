@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import { SettingsPage } from '@/pages/SettingsPage';
@@ -11,7 +11,6 @@ import BatchPage from '@/pages/BatchPage';
 import PortfolioPage from '@/pages/PortfolioPage';
 import SchedulePage from '@/pages/SchedulePage';
 import AnalyzePage from '@/pages/AnalyzePage';
-import { PlaceholderPage } from '@/pages/PlaceholderPage';
 
 function Layout({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle?: string }) {
   return (
@@ -25,22 +24,15 @@ function Layout({ children, title, subtitle }: { children: React.ReactNode; titl
   );
 }
 
-// 9 routes — one per sidebar entry. /analyze is the default landing per
-// existing streamlit convention. Only /settings is fully implemented; the
-// other 8 render a PlaceholderPage so the sidebar navigation feels real.
 const router = createBrowserRouter([
   {
     path: '/',
-    element: (
-      <Layout title="分析" subtitle="单股投研分析入口 (Streamlit 共用)">
-        <PlaceholderPage title="分析" icon="📝" phase="Phase 2.1" description="单股深度分析 (Bull/Bear 辩论 + 风险管理)" />
-      </Layout>
-    ),
+    element: <Navigate to="/analyze" replace />,
   },
   {
     path: '/analyze',
     element: (
-      <Layout title="分析" subtitle="单股投研分析入口 (Streamlit 共用)">
+      <Layout title="分析" subtitle="单股投研分析入口">
         <AnalyzePage />
       </Layout>
     ),
@@ -80,7 +72,7 @@ const router = createBrowserRouter([
   {
     path: '/logs',
     element: (
-      <Layout title="📋 日志" subtitle="LangGraph stream chunks 实时 + 历史">
+      <Layout title="📋 日志" subtitle="实时运行日志 + 历史查询">
         <LogsPage />
       </Layout>
     ),
@@ -96,7 +88,7 @@ const router = createBrowserRouter([
   {
     path: '/schedule',
     element: (
-      <Layout title="定时分析" subtitle="Cron 调度 + 多渠道通知">
+      <Layout title="定时分析" subtitle="定时调度 + 多渠道通知">
         <SchedulePage />
       </Layout>
     ),

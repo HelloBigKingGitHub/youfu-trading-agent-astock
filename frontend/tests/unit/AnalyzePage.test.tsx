@@ -73,6 +73,22 @@ vi.mock('@/api/analyze', async () => {
       }
       return Promise.resolve(MOCK_PROGRESS);
     }),
+    // P2.31 — the page reads live status via getProgress; mirror the
+    // completed-state branch so the auto-advance useEffect actually fires
+    // in tests (otherwise the bug is masked by an errored query).
+    getProgress: vi.fn().mockImplementation((id: string) => {
+      if (id === 'a-002') {
+        return Promise.resolve({
+          ...MOCK_PROGRESS,
+          status: 'ok',
+          current_stage: null,
+          completed_stages: ['market', 'social', 'news', 'fundamentals', 'policy', 'hot_money', 'lockup'],
+          elapsed: 87.42,
+          signal: 'BUY',
+        });
+      }
+      return Promise.resolve(MOCK_PROGRESS);
+    }),
     getAnalysisReport: vi.fn().mockResolvedValue(MOCK_REPORT),
     startAnalysis: vi.fn().mockResolvedValue({
       analysis_id: 'a-new',
@@ -101,8 +117,20 @@ vi.mock('@tanstack/react-query', async () => {
         };
       }
       if (k === 'analyze-progress') {
+        // P2.31 — the bug fires when the completed-progress branch is
+        // active. Defaulting to MOCK_PROGRESS (status='running') would
+        // leave isComplete=false and mask the bug entirely.
         return {
-          data: MOCK_PROGRESS,
+          data: {
+            ...MOCK_PROGRESS,
+            status: 'ok',
+            current_stage: null,
+            completed_stages: [
+              'market', 'social', 'news', 'fundamentals', 'policy', 'hot_money', 'lockup',
+            ],
+            elapsed: 87.42,
+            signal: 'BUY',
+          },
           isLoading: false,
           isFetching: false,
           error: null,
@@ -189,12 +217,64 @@ describe('AnalyzePage', () => {
     expect(screen.getByTestId('analysis-progress-elapsed')).toBeInTheDocument();
   });
 
+  // P2.31 — clicking the 进度 tab on a completed analysis must STAY on 进度.
+  // Prior implementation had a useEffect that auto-advanced to 报告 when
+  // ``isComplete && activeTab === 'progress'``; the user reported this as
+  // a bug because re-clicking 进度 bounced straight back to 报告.
+  it('keeps the progress tab active after clicking it on a completed analysis', async () => {
+    renderPage();
+
+    // Pick a completed analysis from the history tab. handleSelectRecent
+    // auto-switches the active tab to 'report' for completed items — the
+    // user then has to *re-click* 进度 to inspect the stage report trail,
+    // and the page must respect that explicit click.
+    screen.getByTestId('analyze-tab-history').click();
+    await waitFor(() => expect(screen.getByTestId('analysis-recent-table')).toBeInTheDocument());
+    screen.getByTestId('analysis-recent-row-a-002').click();
+
+    // Wait until the report panel is up so we know activeAnalysisId='a-002'
+    // and the progressQuery has resolved with status='ok'.
+    await waitFor(() => expect(screen.getByTestId('analysis-report')).toBeInTheDocument());
+
+    // Sanity: the report tab should be active right after the row click.
+    expect(screen.getByTestId('analyze-tab-report')).toHaveAttribute('aria-selected', 'true');
+
+    // User explicitly clicks 进度.
+    screen.getByTestId('analyze-tab-progress').click();
+    await waitFor(() => expect(screen.getByTestId('analysis-progress')).toBeInTheDocument());
+
+    // Wait a couple of event-loop ticks so any auto-advance useEffect can run.
+    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => {
+      expect(screen.getByTestId('analyze-tab-progress')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+    });
+    // And the report tab is NOT the active one.
+    expect(screen.getByTestId('analyze-tab-report')).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+  });
+
   it('switches to the history tab and renders the recent analysis table', async () => {
     renderPage();
     screen.getByTestId('analyze-tab-history').click();
     await waitFor(() => expect(screen.getByTestId('analysis-recent-table')).toBeInTheDocument());
-    expect(screen.getByTestId('analysis-recent-row-a-001')).toBeInTheDocument();
-    expect(screen.getByTestId('analysis-recent-row-a-002')).toBeInTheDocument();
+    expect(screen.getByTestId('analysis-recent-row-a-001')).toHaveTextContent('0 / 12');
+    expect(screen.getByTestId('analysis-recent-row-a-002')).toHaveTextContent('7 / 12');
+  });
+
+  // P2.30 — the shared purge button must appear inside the history tab so
+  // users can wipe all recent analyses without leaving /analyze.
+  it('renders the shared 清空所有历史 trigger inside the history tab', async () => {
+    renderPage();
+    screen.getByTestId('analyze-tab-history').click();
+    await waitFor(() =>
+      expect(screen.getByTestId('history-purge-trigger')).toBeInTheDocument()
+    );
+    expect(screen.getByTestId('history-purge-trigger')).toHaveTextContent(/清空所有历史/);
   });
 
   it('switches to the workspace tab and renders 7 analyst cards', async () => {

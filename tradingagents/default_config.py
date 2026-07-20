@@ -2,11 +2,40 @@ import os
 
 _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
 
+
+# P2.28 hotfix — ``TRADINGAGENTS_RESULTS_DIR`` and friends are typically
+# written into ``.env`` with a literal ``~/.tradingagents/...`` value
+# (the project's ``.env.example`` uses that style). ``os.getenv`` does NOT
+# expand ``~``, so the unexpanded string flowed into ``config["results_dir"]``
+# and ``Path()`` resolved it relative to CWD — producing files at
+# ``<cwd>/~/.tradingagents/logs/...`` instead of ``~/.tradingagents/logs/...``.
+# The analysis runner happily wrote the log file to the wrong path, the
+# history entry's ``results_path`` field (which mirrors this layout) ended
+# up pointing at the wrong path, and ``/api/analyze/{id}/report`` 404'd
+# even though the file existed on disk.
+#
+# We now ``expanduser`` the env-var fallback so both styles work — a
+# literal ``~`` in .env gets the same expansion as the implicit default.
+def _resolve_home_dir(env_var: str, default: str) -> str:
+    """Read env_var, expanding ``~`` so .env-style values land in $HOME."""
+    raw = os.getenv(env_var, default)
+    return os.path.expanduser(raw)
+
+
 DEFAULT_CONFIG = {
     "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
-    "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR", os.path.join(_TRADINGAGENTS_HOME, "logs")),
-    "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR", os.path.join(_TRADINGAGENTS_HOME, "cache")),
-    "memory_log_path": os.getenv("TRADINGAGENTS_MEMORY_LOG_PATH", os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md")),
+    "results_dir": _resolve_home_dir(
+        "TRADINGAGENTS_RESULTS_DIR",
+        os.path.join(_TRADINGAGENTS_HOME, "logs"),
+    ),
+    "data_cache_dir": _resolve_home_dir(
+        "TRADINGAGENTS_CACHE_DIR",
+        os.path.join(_TRADINGAGENTS_HOME, "cache"),
+    ),
+    "memory_log_path": _resolve_home_dir(
+        "TRADINGAGENTS_MEMORY_LOG_PATH",
+        os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md"),
+    ),
     # Optional cap on the number of resolved memory log entries. When set,
     # the oldest resolved entries are pruned once this limit is exceeded.
     # Pending entries are never pruned. None disables rotation entirely.

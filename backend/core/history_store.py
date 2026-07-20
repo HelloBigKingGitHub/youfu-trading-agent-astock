@@ -8,14 +8,15 @@ merged — this store only manages the history metadata entries.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
-import sys
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
@@ -37,7 +38,11 @@ ZOMBIE_THRESHOLD_SEC = 60.0
 # then wedged on lockup (LLM API hang + mootdx port unreachable). The
 # previous is_zombie() only caught `elapsed == 0`, so this case slipped
 # through. We sweep it on startup too.
-STUCK_THRESHOLD_SEC = 600.0  # 10 minutes
+STUCK_THRESHOLD_SEC = 1800.0  # 30 minutes — user feedback: real analyses
+                            # take ~20 min, the previous 10-min threshold
+                            # was sweeping legitimate long runs as "stuck"
+                            # on backend restart. Must match MAX_RUN_SEC
+                            # in backend/core/runner.py.
 
 
 @dataclass
@@ -99,13 +104,20 @@ class HistoryStore:
 
     All analysis history (both from Streamlit web UI and FastAPI backend)
     is written to and read from this single store.
+
+    P2.30 — every disk-touching method acquires ``_lock_path`` (a reentrant
+    lock) so the ``exclusive_access()`` context manager can hold the same
+    lock while the bulk ``purge`` service scans + wipes metadata, reports
+    and cache without letting a concurrent ``create()`` interleave a new
+    history entry between the "no active analyses" check and the
+    unlink loop.
     """
 
     _instance: "HistoryStore | None" = None
-    _lock = __import__("threading").Lock()
+    _lock = threading.Lock()
 
     def __init__(self) -> None:
-        self._lock_path = __import__("threading").Lock()
+        self._lock_path = threading.RLock()
 
     @classmethod
     def get_instance(cls) -> "HistoryStore":
@@ -114,6 +126,18 @@ class HistoryStore:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
+
+    @contextlib.contextmanager
+    def exclusive_access(self):
+        """Hold the only lock that gates ``_write`` / ``delete`` / ``list_all``.
+
+        Used by the bulk ``purge`` service so a new analysis can not start
+        writing metadata (or a worker can not call ``mark_stage_done``)
+        between the active-check and the unlink loop. Released cleanly on
+        exit even if the caller raises.
+        """
+        with self._lock_path:
+            yield
 
     # ── write ──────────────────────────────────────────────────────────────────
 
@@ -130,29 +154,32 @@ class HistoryStore:
         does), reuse it so in-memory progress and persisted history point at
         the same entry. Direct callers retain legacy id generation.
         """
-        entry = HistoryEntry(
-            analysis_id=analysis_id or f"{ticker}_{trade_date}_{uuid.uuid4().hex[:8]}",
-            ticker=ticker,
-            trade_date=trade_date,
-            status=status,
-            created_at=time.time(),
-        )
-        self._write(entry)
-        return entry
+        with self._lock_path:
+            entry = HistoryEntry(
+                analysis_id=analysis_id or f"{ticker}_{trade_date}_{uuid.uuid4().hex[:8]}",
+                ticker=ticker,
+                trade_date=trade_date,
+                status=status,
+                created_at=time.time(),
+            )
+            self._write(entry)
+            return entry
 
     def update(self, entry: HistoryEntry) -> None:
         """Update an existing entry (call on stage complete, error, etc.)."""
-        self._write(entry)
+        with self._lock_path:
+            self._write(entry)
 
     def mark_running(self, analysis_id: str) -> HistoryEntry | None:
         """Mark an entry as running."""
-        entry = self._read(analysis_id)
-        if not entry:
-            return None
-        entry.status = "running"
-        entry.started_at = time.time()
-        self._write(entry)
-        return entry
+        with self._lock_path:
+            entry = self._read(analysis_id)
+            if not entry:
+                return None
+            entry.status = "running"
+            entry.started_at = time.time()
+            self._write(entry)
+            return entry
 
     def mark_stage_done(
         self,
@@ -167,14 +194,15 @@ class HistoryStore:
         ``stage_reports`` uses the canonical LangGraph chunk field when one
         is supplied.
         """
-        entry = self._read(analysis_id)
-        if not entry:
-            return
-        if stage_id not in entry.completed_stages:
-            entry.completed_stages.append(stage_id)
-        if report:
-            entry.stage_reports[report_key or stage_id] = report[:500]
-        self._write(entry)
+        with self._lock_path:
+            entry = self._read(analysis_id)
+            if not entry:
+                return
+            if stage_id not in entry.completed_stages:
+                entry.completed_stages.append(stage_id)
+            if report:
+                entry.stage_reports[report_key or stage_id] = report[:500]
+            self._write(entry)
 
     def mark_complete(
         self,
@@ -184,45 +212,50 @@ class HistoryStore:
         completed_stages: list[str],
     ) -> None:
         """Mark an entry as completed."""
-        entry = self._read(analysis_id)
-        if not entry:
-            return
-        entry.status = "completed"
-        entry.signal = signal
-        entry.elapsed = elapsed
-        entry.completed_stages = completed_stages
-        entry.finished_at = time.time()
-        self._write(entry)
+        with self._lock_path:
+            entry = self._read(analysis_id)
+            if not entry:
+                return
+            entry.status = "completed"
+            entry.signal = signal
+            entry.elapsed = elapsed
+            entry.completed_stages = completed_stages
+            entry.finished_at = time.time()
+            self._write(entry)
 
     def mark_error(self, analysis_id: str, error: str, elapsed: float = 0.0) -> None:
         """Mark an entry as errored."""
-        entry = self._read(analysis_id)
-        if not entry:
-            return
-        entry.status = "error"
-        entry.error = error
-        entry.elapsed = elapsed
-        entry.finished_at = time.time()
-        self._write(entry)
+        with self._lock_path:
+            entry = self._read(analysis_id)
+            if not entry:
+                return
+            entry.status = "error"
+            entry.error = error
+            entry.elapsed = elapsed
+            entry.finished_at = time.time()
+            self._write(entry)
 
     def set_results_path(self, analysis_id: str, path: str) -> None:
         """Set the path to the full_states_log_*.json file."""
-        entry = self._read(analysis_id)
-        if not entry:
-            return
-        entry.results_path = path
-        self._write(entry)
+        with self._lock_path:
+            entry = self._read(analysis_id)
+            if not entry:
+                return
+            entry.results_path = path
+            self._write(entry)
 
     def delete(self, analysis_id: str) -> None:
         """Delete a history entry."""
-        path = _HISTORY_DIR / f"{analysis_id}.json"
-        if path.exists():
-            path.unlink()
+        with self._lock_path:
+            path = _HISTORY_DIR / f"{analysis_id}.json"
+            if path.exists():
+                path.unlink()
 
     # ── read ───────────────────────────────────────────────────────────────────
 
     def get(self, analysis_id: str) -> HistoryEntry | None:
-        return self._read(analysis_id)
+        with self._lock_path:
+            return self._read(analysis_id)
 
     def list_all(
         self,
@@ -233,28 +266,29 @@ class HistoryStore:
         offset: int = 0,
     ) -> tuple[list[HistoryEntry], int]:
         """List entries with optional filters, returns (entries, total)."""
-        if not _HISTORY_DIR.exists():
-            return [], 0
+        with self._lock_path:
+            if not _HISTORY_DIR.exists():
+                return [], 0
 
-        entries: list[HistoryEntry] = []
-        for f in _HISTORY_DIR.glob("*.json"):
-            try:
-                d = json.loads(f.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                continue
-            entry = HistoryEntry.from_dict(d)
+            entries: list[HistoryEntry] = []
+            for f in _HISTORY_DIR.glob("*.json"):
+                try:
+                    d = json.loads(f.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                entry = HistoryEntry.from_dict(d)
 
-            if ticker and ticker.upper() not in entry.ticker.upper():
-                continue
-            if signal and entry.signal != signal:
-                continue
-            if status and entry.status != status:
-                continue
-            entries.append(entry)
+                if ticker and ticker.upper() not in entry.ticker.upper():
+                    continue
+                if signal and entry.signal != signal:
+                    continue
+                if status and entry.status != status:
+                    continue
+                entries.append(entry)
 
-        entries.sort(key=lambda e: e.created_at, reverse=True)
-        total = len(entries)
-        return entries[offset : offset + limit], total
+            entries.sort(key=lambda e: e.created_at, reverse=True)
+            total = len(entries)
+            return entries[offset : offset + limit], total
 
     def find_by_ticker_date(self, ticker: str, trade_date: str) -> HistoryEntry | None:
         """Find the most recent entry for a ticker + trade_date combination."""

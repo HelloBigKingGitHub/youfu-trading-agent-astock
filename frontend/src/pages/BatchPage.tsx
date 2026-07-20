@@ -258,8 +258,8 @@ export function BatchPage() {
             <h1 className="text-inherit font-inherit" data-testid="batch-title">📊 批量分析</h1>
           </CardTitle>
           <CardDescription>
-            一次跑多个 ticker + 同一日期,共享同一份 LLM 配置。任务在后台线程池并行,
-            失败/取消的 job 可以单独重试。
+            一次跑多个股票 + 同一日期, 共享同一份模型配置。后台并行执行,
+            失败或取消的任务可以单独重试。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -339,9 +339,7 @@ export function BatchPage() {
               </Alert>
             )}
             <p className="text-xs text-text-tertiary">
-              任务在 <code>backend.core.job_queue</code> ThreadPoolExecutor 跑,
-              默认 5 worker。LLM 配置留空 → 走 ⚙️ 设置 / env 兜底。
-              与 Streamlit <code>web/components/batch_panel.py</code> 1:1。
+              后台并发执行, 最多 5 个并行任务。模型配置留空时使用 ⚙️ 设置或环境变量。
             </p>
           </div>
 
@@ -451,8 +449,7 @@ export function BatchPage() {
               isLoading={listQuery.isLoading}
             />
             <p className="text-xs text-text-tertiary">
-              最近 20 个 batch · 与 Streamlit <code>web/components/batch_panel.py</code>{' '}
-              共享 <code>backend.core.job_queue.JobQueue</code> 单例。
+              最近 20 批任务, 按提交时间倒序排列。
             </p>
           </div>
         </CardContent>

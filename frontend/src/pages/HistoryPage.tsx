@@ -36,6 +36,7 @@ import {
 import { FilterBar, type HistoryFilters, EMPTY_FILTERS } from '@/components/history/filter-bar';
 import { HistoryRow } from '@/components/history/history-row';
 import { HistoryDetailModal } from '@/components/history/history-detail';
+import { HistoryPurgeDialog } from '@/components/history/history-purge-dialog';
 
 // HistoryPage — mirrors web/components/history_panel.py render_history_panel().
 // Layout:
@@ -178,6 +179,14 @@ export function HistoryPage() {
     refetch();
   }
 
+  function handlePurged() {
+    // Close any open detail modal + reset to page 0 so the (now empty)
+    // list is the first thing the user sees.
+    setDetailOpen(false);
+    setTimeout(() => setDetailId(null), 200);
+    setPage(0);
+  }
+
   // ── render ───────────────────────────────────────────────────────────────
   const items = data?.items ?? [];
   const total = data?.total ?? 0;
@@ -189,15 +198,20 @@ export function HistoryPage() {
   return (
     <div data-testid="history-page" className="mx-auto w-full max-w-7xl space-y-6">
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <HistoryIcon className="h-6 w-6" />
-            📋 历史报告
-          </CardTitle>
-          <CardDescription>
-            历史分析记录查询 · 共 <span data-testid="history-total">{total}</span> 条记录 ·
-            列表布局 7 列（股票·日期 / 信号 / 状态 / 耗时 / 阶段 / 错误 / 操作）
-          </CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div className="space-y-1.5">
+            <CardTitle className="flex items-center gap-2">
+              <HistoryIcon className="h-6 w-6" />
+              📋 历史报告
+            </CardTitle>
+            <CardDescription>
+              历史分析记录查询 · 共 <span data-testid="history-total">{total}</span> 条记录 ·
+              列表布局 7 列（股票·日期 / 信号 / 状态 / 耗时 / 阶段 / 错误 / 操作）
+            </CardDescription>
+          </div>
+          <div className="shrink-0">
+            <HistoryPurgeDialog onPurged={handlePurged} />
+          </div>
         </CardHeader>
         <CardContent className="space-y-6">
           <FilterBar

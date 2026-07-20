@@ -60,8 +60,7 @@ export function TickerInput({
         className="text-xs text-text-tertiary"
         data-testid="ticker-input-help"
       >
-        支持 6 位 A 股代码 (例: 600519) 或中文 ticker 名 (例: 贵州茅台) ·
-        安全解析通过 <code>backend.core.resolve_ticker</code>
+        支持 6 位 A 股代码 (例: 600519) 或中文名 (例: 贵州茅台), 输入后自动解析为代码
       </p>
       {showError && (
         <p

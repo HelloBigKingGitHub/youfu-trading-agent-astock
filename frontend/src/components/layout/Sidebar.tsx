@@ -14,15 +14,15 @@ export interface NavEntry {
 }
 
 export const NAV_ENTRIES: NavEntry[] = [
-  { to: '/analyze',  icon: '📝', label: '分析',   phase: 'Phase 2.9 ✅', enabled: true },
-  { to: '/batch',    icon: '📊', label: '批量',   phase: 'Phase 2.6 ✅', enabled: true  },
-  { to: '/sector',   icon: '📈', label: '板块',   phase: 'Phase 2.5 ✅', enabled: true  },
-  { to: '/portfolio',icon: '💼', label: '仓位',   phase: 'Phase 2.7 ✅', enabled: true  },
-  { to: '/history',  icon: '📋', label: '历史',   phase: 'Phase 2.2 ✅', enabled: true  },
-  { to: '/logs',     icon: '📋', label: '日志',   phase: 'Phase 2.3 ✅', enabled: true  },
-  { to: '/chart',    icon: '📈', label: '走势',   phase: 'Phase 2.4 ✅', enabled: true  },
-  { to: '/schedule', icon: '⏰', label: '定时',   phase: 'Phase 2.8 ✅', enabled: true  },
-  { to: '/settings', icon: '⚙️', label: '设置',   phase: 'Phase 1 ✅', enabled: true  },
+  { to: '/analyze',  icon: '📝', label: '分析',   phase: 'v0.7.0', enabled: true },
+  { to: '/batch',    icon: '📊', label: '批量',   phase: 'v0.7.0', enabled: true  },
+  { to: '/sector',   icon: '📈', label: '板块',   phase: 'v0.7.0', enabled: true  },
+  { to: '/portfolio',icon: '💼', label: '仓位',   phase: 'v0.7.0', enabled: true  },
+  { to: '/history',  icon: '📋', label: '历史',   phase: 'v0.7.0', enabled: true  },
+  { to: '/logs',     icon: '📋', label: '日志',   phase: 'v0.7.0', enabled: true  },
+  { to: '/chart',    icon: '📈', label: '走势',   phase: 'v0.7.0', enabled: true  },
+  { to: '/schedule', icon: '⏰', label: '定时',   phase: 'v0.7.0', enabled: true  },
+  { to: '/settings', icon: '⚙️', label: '设置',   phase: 'v0.7.0', enabled: true  },
 ];
 
 const _BUILD = 'v0.7.0-dev';
@@ -75,7 +75,7 @@ export function Sidebar() {
       <div className="mt-auto p-3 text-xs text-text-tertiary border-t border-border-1
                       font-mono leading-relaxed">
         <div>⚠️ 仅供学习研究，不构成投资建议</div>
-        <div className="mt-1.5 text-text-tertiary">v0.7.0-dev · React SPA + FastAPI</div>
+        <div className="mt-1.5 text-text-tertiary">{_BUILD}</div>
       </div>
     </aside>
   );
@@ -91,7 +91,7 @@ function SidebarItem({ entry }: { entry: NavEntry }) {
     return (
       <div
         data-testid={`sidebar-${entry.label}`}
-        title={`TODO: ${entry.phase}`}
+        title={entry.phase}
         aria-disabled="true"
         className={cn(
           baseClasses,

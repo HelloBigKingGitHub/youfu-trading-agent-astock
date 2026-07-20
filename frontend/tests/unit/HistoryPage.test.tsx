@@ -155,4 +155,16 @@ describe('HistoryPage', () => {
     );
     expect(screen.getByTestId('history-detail-close')).toBeInTheDocument();
   });
+
+  // P2.30 — the shared purge button must be visible in the page header so
+  // the user can wipe all terminal history in one action.
+  it('renders the shared 清空所有历史 trigger button in the page header', async () => {
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('history-page')).toBeInTheDocument());
+
+    const trigger = screen.getByTestId('history-purge-trigger');
+    expect(trigger).toBeInTheDocument();
+    expect(trigger).toHaveTextContent(/清空所有历史/);
+  });
 });

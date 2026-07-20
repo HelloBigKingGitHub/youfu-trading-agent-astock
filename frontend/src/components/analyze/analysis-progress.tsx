@@ -146,6 +146,20 @@ export function AnalysisProgress({
   const isRunning = !isError && !isComplete;
   const latestSnippet = latestStageReportSnippet(progress, inferredCurrent);
 
+  // P2.27 hotfix — when the analysis errored, ``current_stage`` in the
+  // payload still names the stage where the runner crashed (e.g.
+  // ``"quality_gate"`` after the 600s/1800s hard timeout fires), but
+  // that stage is NOT done and NOT still running — it died mid-flight.
+  // We mark it visually as "errored" (red, distinct from the green
+  // "done" and blue "running") and refuse to render any other stage as
+  // "running" so the progress bar settles into a clear failure state.
+  // Without this, the UI shows "质量门禁 ● 蓝色 (running)" alongside the
+  // error banner — a contradiction the user reported as "progress page
+  // stuck after timeout fires" because the bar never settled.
+  const erroredStage = isError
+    ? (progress.current_stage || inferredCurrent)
+    : null;
+
   async function handleCancel() {
     if (!progress || cancelling) return;
     if (!window.confirm('确定要取消这个正在运行的分析吗? 取消后 UI 会停止轮询, 后台线程会继续运行直到自然结束.')) {
@@ -211,7 +225,15 @@ export function AnalysisProgress({
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3" data-testid="analysis-progress-stages">
         {STAGES.map((s) => {
           const isDone = completed.has(s.id);
-          const isRunningThis = !isDone && inferredCurrent === s.id;
+          // P2.27 — when errored OR complete, suppress the "running"
+          // highlight so the bar settles into a terminal state. The
+          // crashed stage (errored case only) gets a distinct red style
+          // instead. Without this, status='ok' would still highlight
+          // quality_gate as "running" because ``inferredCurrent`` is
+          // derived from completed_stages[-1]+1 and quality_gate is the
+          // next one — even though the run has finished.
+          const isRunningThis = !isDone && !isError && !isComplete && inferredCurrent === s.id;
+          const isErrored = !isDone && isError && s.id === erroredStage;
           return (
             <div
               key={s.id}
@@ -219,18 +241,21 @@ export function AnalysisProgress({
                 'flex items-center gap-2 rounded-md border p-2 text-sm ' +
                 (isDone
                   ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                  : isRunningThis
-                    ? 'border-bb-accent/40 bg-bb-accent/10 text-bb-accent-bright'
-                    : 'border-border-1 bg-bg-elevated/40 text-text-tertiary')
+                  : isErrored
+                    ? 'border-red-500/50 bg-red-500/10 text-red-300'
+                    : isRunningThis
+                      ? 'border-bb-accent/40 bg-bb-accent/10 text-bb-accent-bright'
+                      : 'border-border-1 bg-bg-elevated/40 text-text-tertiary')
               }
               data-testid={`analysis-stage-${s.id}`}
-              data-status={isDone ? 'done' : isRunningThis ? 'running' : 'pending'}
+              data-status={isDone ? 'done' : isErrored ? 'errored' : isRunningThis ? 'running' : 'pending'}
             >
               <span className="text-lg leading-none">{s.icon}</span>
               <span className="flex-1">{s.name}</span>
               {isDone && <CheckCircle2 className="h-4 w-4" />}
+              {isErrored && <AlertCircle className="h-4 w-4" />}
               {isRunningThis && <Loader2 className="h-4 w-4 animate-spin" />}
-              {!isDone && !isRunningThis && <Circle className="h-4 w-4" />}
+              {!isDone && !isErrored && !isRunningThis && <Circle className="h-4 w-4" />}
             </div>
           );
         })}
@@ -265,11 +290,20 @@ export function AnalysisProgress({
 
       {isError && (
         <div
-          className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300"
+          className="flex items-start gap-3 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300"
           data-testid="analysis-progress-error"
         >
           <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-          <span>{progress.error ?? '分析失败'}</span>
+          <div className="flex-1 space-y-1">
+            <div className="font-semibold">分析已终止</div>
+            <div className="text-xs leading-relaxed">
+              {progress.error ?? '分析失败'}
+            </div>
+            <div className="text-xs text-red-300/70">
+              已完成的 {completed.size} 个阶段报告仍可在「工作区」tab 查看 · 切到「新建」tab 可重跑
+              （建议换模型 / 缩短窗口期后重试）
+            </div>
+          </div>
         </div>
       )}
 

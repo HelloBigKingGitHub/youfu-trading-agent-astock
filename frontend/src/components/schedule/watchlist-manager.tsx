@@ -69,7 +69,7 @@ export function WatchlistManager({ entries, validTags, isLoading, error }: Watch
           className="rounded-md border border-dashed border-border-2 bg-bg-elevated/40 p-6 text-center text-sm text-text-tertiary"
           data-testid="watchlist-empty"
         >
-          {entries.length === 0 ? '暂无自选股 (Streamlit 端录入).' : '当前 tag 下无 ticker.'}
+          {entries.length === 0 ? '暂无自选股,请到设置页添加。' : '当前 tag 下无 ticker.'}
         </div>
       ) : (
         <Table data-testid="watchlist-table">

@@ -44,6 +44,7 @@ import { AnalysisProgress } from '@/components/analyze/analysis-progress';
 import { AnalysisReport } from '@/components/analyze/analysis-report';
 import { AnalysisRecentList } from '@/components/analyze/analysis-recent-list';
 import { AnalysisWorkspace } from '@/components/analyze/analysis-workspace';
+import { HistoryPurgeDialog } from '@/components/history/history-purge-dialog';
 import { useToast } from '@/components/ui/toast';
 
 type TabKey = 'new' | 'progress' | 'report' | 'history' | 'workspace';
@@ -102,6 +103,12 @@ export function AnalyzePage() {
   const [activeTab, setActiveTab] = React.useState<TabKey>(DEFAULT_TAB);
   const [activeAnalysisId, setActiveAnalysisId] = React.useState<string | null>(null);
   const [formError, setFormError] = React.useState<string | null>(null);
+  // P2.26 hotfix — set of analysis_ids the user just created via
+  // ``startMut``. The recent-list validation effect skips IDs in this set
+  // so we don't bounce the user back to history during the race between
+  // ``setActiveAnalysisId`` and the post-mutation ``invalidateQueries``
+  // propagating to the cached recent list.
+  const recentlyCreatedIdsRef = React.useRef<Set<string>>(new Set());
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -200,9 +207,18 @@ export function AnalyzePage() {
   // short-circuit to the fallback before any network call happens.
   // P2.12 hotfix — guard also rejects "null" / "undefined" literal strings
   // (a JS quirk when JSON round-trip happens upstream).
+  // P2.26 hotfix — skip the validation for IDs we just created via the
+  // start mutation. The race: ``onSuccess`` calls ``setActiveAnalysisId``
+  // and ``invalidateQueries('analyze-recent')`` together; the validation
+  // effect fires synchronously on the next render with the cached recent
+  // list (which doesn't yet contain the new id), and used to bounce the
+  // user back to history. By tracking freshly-created ids in a ref and
+  // skipping them, the validation only fires for truly stale ids (the
+  // intended P2.10 behaviour).
   React.useEffect(() => {
     if (!isUsableAnalysisId(activeAnalysisId)) return;
     if (!recentQuery.data) return; // recent list still loading
+    if (recentlyCreatedIdsRef.current.has(activeAnalysisId)) return;
     const known = recentQuery.data.some((it) => it.analysis_id === activeAnalysisId);
     if (!known) {
       fallbackToHistory(
@@ -237,21 +253,35 @@ export function AnalyzePage() {
   // 404 we bounce back to history. This catches the case where the recent list
   // was stale (entry deleted between render and fetch).
   // P2.12 hotfix — guard also rejects "null"/"undefined" sentinel strings.
+  // P2.26 hotfix — only fall back when the recent list ALSO doesn't have
+  // this id. For in-flight analyses the /report endpoint 404s because the
+  // full report hasn't been written yet (results_path is empty). Without
+  // this guard the effect resets activeAnalysisId the moment the user
+  // switches to the report tab for a still-running analysis, killing the
+  // workspace + progress polls.
   React.useEffect(() => {
     if (!reportQuery.error) return;
     const msg = reportQuery.error instanceof Error ? reportQuery.error.message : null;
-    if (isUsableAnalysisId(activeAnalysisId) && isReportNotFoundError(msg)) {
+    if (!isUsableAnalysisId(activeAnalysisId) || !isReportNotFoundError(msg)) return;
+    const stillInRecent = recentQuery.data?.some((it) => it.analysis_id === activeAnalysisId);
+    if (!stillInRecent) {
       fallbackToHistory(
         activeAnalysisId,
         '找不到该分析 (后端 404), 已自动跳回历史列表',
       );
     }
-  }, [reportQuery.error, activeAnalysisId, fallbackToHistory]);
+  }, [reportQuery.error, activeAnalysisId, recentQuery.data, fallbackToHistory]);
 
   const startMut = useMutation({
     mutationFn: (payload: AnalyzeRequest) => startAnalysis(payload),
     onSuccess: (result) => {
       setFormError(null);
+      // P2.26 — register the new id in the "freshly created" set BEFORE
+      // setting activeAnalysisId, so the validation effect (which fires
+      // synchronously on the next render and would otherwise see the new
+      // id missing from the stale recent-list cache) doesn't bounce the
+      // user to the history tab.
+      recentlyCreatedIdsRef.current.add(result.analysis_id);
       setActiveAnalysisId(result.analysis_id);
       setActiveTab('progress');
       void queryClient.invalidateQueries({ queryKey: ['analyze-recent'] });
@@ -337,8 +367,30 @@ export function AnalyzePage() {
       });
       return;
     }
+    // P2.26 hotfix — pick the right tab based on the analysis's status.
+    // For in-flight (status=running) analyses the /report endpoint 404s
+    // because full_states_log_*.json hasn't been written yet. Routing to
+    // the report tab in that case triggered the reportQuery.error effect
+    // → fallbackToHistory → reset activeAnalysisId + bounce back to
+    // history. Sending the user to the progress tab for running items
+    // (and to the report tab for completed items) keeps activeAnalysisId
+    // stable across tab switches.
+    //
+    // P2.27 hotfix — also route errored analyses to the progress tab.
+    // For status=error items the full report file is missing
+    // (results_path='') so /report also 404s with the same misleading
+    // "分析 '…' 的报告文件丢失" message the user reported as "progress
+    // page stuck after timeout fires". The progress tab is the right
+    // landing page for errored runs because it (a) shows what finished
+    // before the crash via the 7 stage cards, (b) displays the error
+    // banner with the timeout/exception reason, and (c) gives the user
+    // an obvious next step (re-run via 新建).
+    const item = recentItems.find((it) => it.analysis_id === analysisId);
+    const isRunning = item?.status === 'running' || item?.status === null || item?.status === undefined;
+    const isErrored = item?.status === 'error';
+    const tab: TabKey = isRunning || isErrored ? 'progress' : 'report';
     setActiveAnalysisId(analysisId);
-    setActiveTab('report');
+    setActiveTab(tab);
   }
 
   async function handleSubmit(payload: AnalyzeRequest) {
@@ -358,12 +410,11 @@ export function AnalyzePage() {
   const progress = progressQuery.data ?? null;
   const isComplete = progress?.status === 'ok' || progress?.status === 'complete';
 
-  // Auto-advance from 进度 to 报告 when run finishes.
-  React.useEffect(() => {
-    if (isComplete && activeTab === 'progress') {
-      setActiveTab('report');
-    }
-  }, [isComplete, activeTab]);
+  // P2.31 — REMOVED the auto-advance effect that bounced a user who *re-clicked*
+  // 进度 back to 报告 whenever ``isComplete`` was true. The user explicitly
+  // asked to stay on 进度 when they click it. handleSelectRecent() already
+  // routes a freshly-clicked completed row to 报告, so a user who wants the
+  // stage report trail has to opt in by clicking 进度 — respect that.
 
   const isFetching =
     recentQuery.isFetching || progressQuery.isFetching || reportQuery.isFetching;
@@ -380,9 +431,8 @@ export function AnalyzePage() {
             <h1 className="text-inherit font-inherit">📝 单股分析</h1>
           </CardTitle>
           <CardDescription>
-            7 位分析师 (市场/情绪/新闻/基本面/政策/游资/解禁) + 多空辩论 + 风险管理 ·
-            引擎 backend.core.start_analysis (复用 web.runner.run_one_analysis) ·
-            与 Streamlit <code>web/components/analyze_panel.py</code> 共用同一业务函数, 0 改业务层
+            7 位分析师 (市场 / 情绪 / 新闻 / 基本面 / 政策 / 游资 / 解禁) 协同,
+            通过多空辩论与三方风控形成最终投资建议。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -515,13 +565,29 @@ export function AnalyzePage() {
                   </AlertDescription>
                 </Alert>
               ) : (
-                <AnalysisRecentList
-                  items={recentItems}
-                  isLoading={recentQuery.isLoading}
-                  error={null}
-                  selectedId={activeAnalysisId}
-                  onSelect={handleSelectRecent}
-                />
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs text-text-secondary">
+                      共 {recentItems.length} 条分析记录
+                    </p>
+                    <HistoryPurgeDialog
+                      onPurged={() => {
+                        // The shared dialog already removed the per-id
+                        // caches; clearing the active id here also drops
+                        // any tab that was pinned to a now-deleted report.
+                        setActiveAnalysisId(null);
+                        setActiveTab('history');
+                      }}
+                    />
+                  </div>
+                  <AnalysisRecentList
+                    items={recentItems}
+                    isLoading={recentQuery.isLoading}
+                    error={null}
+                    selectedId={activeAnalysisId}
+                    onSelect={handleSelectRecent}
+                  />
+                </div>
               )
             )}
 
@@ -543,9 +609,7 @@ export function AnalyzePage() {
           </div>
 
           <p className="text-xs text-text-tertiary">
-            单股分析模块基于 web.runner.run_one_analysis + backend.core.start_analysis
-            + history_store 单例, 与 Streamlit <code>web/components/analyze_panel.py</code>
-            共用同一业务函数, 0 改业务层
+            分析过程实时进度 + 阶段产出可查, 完成后支持 Markdown / PDF 导出。
           </p>
         </CardContent>
       </Card>

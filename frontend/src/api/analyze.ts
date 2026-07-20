@@ -6,6 +6,7 @@
  *   GET  /api/analyze/recent?limit=N        → list most-recent N analyses (newest first)
  *   GET  /api/analyze/{id}                  → live progress (poll while running)
  *   GET  /api/analyze/{id}/report           → full report (full_states_log_*.json)
+ *   GET  /api/analyze/{id}/export?format=X  → download as md|pdf (P2.29)
  *
  * Both UIs (Streamlit analyze_panel.py + this React AnalyzePage) call the
  * same backend.core.start_analysis / tracker / history_store singletons. No
@@ -81,13 +82,34 @@ export interface ProgressResponse {
   error: string | null;
 }
 
-/** Pydantic mirror: AnalyzeReport (GET /api/analyze/{id}/report). */
+/** Pydantic mirror: AnalyzeReport (GET /api/analyze/{id}/report).
+ *
+ *  P2.29 — added ``pdf_available`` so the report tab can decide whether the
+ *  📄 PDF button is enabled without a separate preflight request. Computed
+ *  once at module import by probing the host for a CJK font (see
+ *  backend/api/analyze.py::_pdf_export_available).
+ */
 export interface AnalyzeReport {
   analysis_id: string;
   ticker: string;
   trade_date: string;
   results_path: string;
   report: Record<string, unknown> | null;
+  pdf_available: boolean;
+}
+
+export type ExportFormat = 'md' | 'pdf';
+
+export function analyzeExportUrl(analysisId: string, format: ExportFormat): string {
+  return _url(`/api/analyze/${safeAnalysisId(analysisId)}/export?format=${format}`);
+}
+
+export function analyzeExportFilename(
+  ticker: string,
+  trade_date: string,
+  format: ExportFormat,
+): string {
+  return `TradingAgents-Astock_${ticker}_${trade_date}.${format}`;
 }
 
 /** Pydantic mirror: RecentAnalyzeItem (GET /api/analyze/recent). */

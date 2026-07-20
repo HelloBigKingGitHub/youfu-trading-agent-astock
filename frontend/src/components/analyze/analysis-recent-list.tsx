@@ -123,7 +123,7 @@ export function AnalysisRecentList({
                 <span className={`text-xs ${statusColor(it.status)}`}>{it.status ?? '—'}</span>
               </TableCell>
               <TableCell className="text-xs text-text-secondary">
-                {it.completed_stages?.length ?? 0} / 7
+                {it.completed_stages?.length ?? 0} / 12
               </TableCell>
               <TableCell className="font-mono text-xs">{fmtElapsed(it.elapsed)}</TableCell>
               <TableCell className="text-xs text-text-tertiary">{fmtTs(it.created_at)}</TableCell>

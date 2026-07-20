@@ -1,9 +1,20 @@
 """Shared pytest fixtures that prevent CI hangs when API keys are absent."""
 
 import os
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+# Ensure the repository root is importable so ``backend.*`` and ``web.*``
+# resolve when tests are collected via ``pytest tests/...`` (which otherwise
+# leaves the working dir out of ``sys.path``). Mirrors what the application
+# code does at import time via ``_PROJECT_ROOT`` shims.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 def pytest_configure(config):

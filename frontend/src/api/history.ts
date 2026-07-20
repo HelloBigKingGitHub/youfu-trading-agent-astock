@@ -138,3 +138,32 @@ export async function getReport(analysisId: string): Promise<HistoryReport> {
   }
   return (await res.json()) as HistoryReport;
 }
+
+// ── purge (P2.30) ─────────────────────────────────────────────────────────
+export interface PurgeHistoryResponse {
+  ok: boolean;
+  history_deleted: number;
+  reports_deleted: number;
+  log_runs_deleted: number;
+  cache_files_deleted: number;
+  bytes_freed: number;
+  failed_items: number;
+}
+
+export interface PurgeHistoryBody {
+  confirmation: 'CLEAR_ALL_HISTORY';
+  include_cache: boolean;
+}
+
+export async function purgeHistory(body: PurgeHistoryBody): Promise<PurgeHistoryResponse> {
+  const res = await fetch(_url('/api/history/purge'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'omit',
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`POST /api/history/purge ${res.status}: ${await res.text()}`);
+  }
+  return (await res.json()) as PurgeHistoryResponse;
+}

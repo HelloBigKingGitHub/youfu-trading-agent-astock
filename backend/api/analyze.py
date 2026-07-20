@@ -12,15 +12,17 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Literal
 
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.core import start_analysis
 from backend.core.history_store import get_history_store
+from backend.core.report_adapter import adapt_report_for_export, strip_think_blocks
 from backend.models.request import AnalyzeRequest, AnalyzeResponse
 
 logger = logging.getLogger(__name__)
@@ -49,12 +51,39 @@ class RecentAnalyzeItem(BaseModel):
 
 
 class AnalyzeReport(BaseModel):
-    """Full report payload — mirrors history.py ``get_history_report``."""
+    """Full report payload — mirrors history.py ``get_history_report``.
+
+    P2.29 — added ``pdf_available`` so the React report tab's 📄 PDF button
+    can show its disabled state without a separate preflight request.
+    The value is computed once at module import (``_pdf_export_available``)
+    because ``_find_cjk_font`` recursively scans system font directories and
+    we don't want to repeat that work on every report fetch.
+    """
     analysis_id: str
     ticker: str
     trade_date: str
     results_path: str
     report: dict | None = None
+    pdf_available: bool = False
+
+
+# P2.29 — CJK-font probe, lazily memoized. ``web/pdf_export._find_cjk_font``
+# recursively walks /usr/share/fonts etc. so we don't want to pay that cost
+# on every /report fetch. Re-probed lazily via ``invalidate_caches`` if the
+# user installs a font mid-session.
+def _pdf_export_available() -> bool:
+    """True iff the host has at least one CJK font readable by fpdf2.
+
+    Imported lazily so test environments that don't have fpdf2 still work.
+    """
+    try:
+        from web import pdf_export as _pdf_mod
+    except Exception:
+        return False
+    try:
+        return _pdf_mod._find_cjk_font() is not None
+    except Exception:
+        return False
 
 
 def _entry_to_item(entry) -> RecentAnalyzeItem:
@@ -211,13 +240,33 @@ def get_analyze_report(analysis_id: str) -> AnalyzeReport:
     Reads ``history.entry.results_path`` (full_states_log_*.json) and returns
     it as JSON. Falls back to the legacy ticker/date path if results_path is
     empty — same fallback ``history.py::get_history_report`` uses.
+
+    P2.29 — also reports ``pdf_available`` so the React report tab can decide
+    whether the 📄 PDF button should be enabled without a separate preflight.
+    """
+    content, entry, path = _load_report_json(analysis_id)
+
+    return AnalyzeReport(
+        analysis_id=entry.analysis_id,
+        ticker=entry.ticker,
+        trade_date=entry.trade_date,
+        results_path=str(path),
+        report=content if isinstance(content, dict) else {"raw": content},
+        pdf_available=_pdf_export_available(),
+    )
+
+
+def _load_report_json(analysis_id: str) -> tuple[dict, object, Path]:
+    """Shared loader for the /report and /export endpoints.
+
+    Returns ``(report_dict, history_entry, resolved_path)``. Raises
+    ``HTTPException(404)`` when the analysis is missing or the report
+    file is gone — same payload shape both callers surface.
     """
     store = get_history_store()
     entry = store.get(analysis_id)
     if entry is None:
-        # P2.10 hotfix: friendlier 404 — React Query may hold a stale
-        # analysis_id from an old session; explain in user-facing Chinese so
-        # the AnalyzePage can render a banner + offer "go back to history".
+        # P2.10 hotfix — friendlier 404 (Chinese) shared by /report + /export.
         raise HTTPException(
             status_code=404,
             detail=(
@@ -230,7 +279,6 @@ def get_analyze_report(analysis_id: str) -> AnalyzeReport:
     path = Path(results_path) if results_path else None
 
     if not path or not path.exists():
-        # Legacy fallback — mirrors history.py.
         legacy = (
             Path.home()
             / ".tradingagents"
@@ -257,10 +305,100 @@ def get_analyze_report(analysis_id: str) -> AnalyzeReport:
             status_code=500, detail=f"failed to read report: {exc}"
         ) from exc
 
-    return AnalyzeReport(
-        analysis_id=entry.analysis_id,
-        ticker=entry.ticker,
-        trade_date=entry.trade_date,
-        results_path=str(path),
-        report=content if isinstance(content, dict) else {"raw": content},
+    # P2.31 — drop the LLM's chain-of-thought (``<think>...</think>``) at the
+    # API boundary. Applies to /report + /export, so the PDF exporter and
+    # the React report tab both see the cleaned payload.
+    content = strip_think_blocks(content)
+
+    if not isinstance(content, dict):
+        content = {"raw": content}
+
+    return content, entry, path
+
+
+# ── P2.29: GET /api/analyze/{analysis_id}/export?format=md|pdf ────────────────
+
+@router.get("/analyze/{analysis_id}/export")
+def export_analyze_report(
+    analysis_id: str,
+    format: Literal["md", "pdf"] = Query(..., description="markdown or pdf"),
+) -> StreamingResponse:
+    """Download the report as Markdown or PDF.
+
+    Mirrors the Streamlit download buttons in
+    ``web/components/report_viewer.py:66-94``. The browser gets the file
+    via ``Content-Disposition: attachment`` so it triggers a native save
+    dialog instead of inlining.
+
+    Errors:
+      * 404 — unknown analysis_id or report file missing
+      * 422 — ``format`` missing or not in {md, pdf}
+      * 503 — PDF requested but host has no CJK font
+      * 500 — Markdown serialization or PDF generation crashed
+    """
+    content, entry, _path = _load_report_json(analysis_id)
+    adapted, signal = adapt_report_for_export(content)
+
+    filename = f"TradingAgents-Astock_{entry.ticker}_{entry.trade_date}.{format}"
+
+    if format == "md":
+        try:
+            from web import pdf_export as _pdf_mod
+            md_text = _pdf_mod.generate_markdown(
+                adapted, entry.ticker, entry.trade_date, signal or "BUY",
+            )
+        except Exception as exc:  # noqa: BLE001 — propagate as 500
+            logger.exception("Markdown export failed for %s", analysis_id)
+            raise HTTPException(
+                status_code=500,
+                detail=f"markdown export failed: {exc}",
+            ) from exc
+        return StreamingResponse(
+            iter([md_text.encode("utf-8")]),
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+
+    # format == "pdf"
+    if not _pdf_export_available():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "reason": "no_cjk_font",
+                "message": (
+                    "PDF 导出需要系统装有中文字体（Windows 自带微软雅黑/黑体，"
+                    "macOS 自带苹方，Linux 可 apt install fonts-noto-cjk）。"
+                    "请改用 Markdown 导出。"
+                ),
+            },
+        )
+    try:
+        from web import pdf_export as _pdf_mod
+        pdf_bytes = _pdf_mod.generate_pdf(
+            adapted, entry.ticker, entry.trade_date, signal or "BUY",
+        )
+    except RuntimeError as exc:
+        # Font / fpdf2 runtime issues — surface as 503 with the message so
+        # the user knows why their PDF doesn't render.
+        logger.warning("PDF export unavailable for %s: %s", analysis_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail={"reason": "pdf_runtime", "message": str(exc)},
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("PDF export crashed for %s", analysis_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"pdf export failed: {exc}",
+        ) from exc
+
+    return StreamingResponse(
+        iter([pdf_bytes]),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(pdf_bytes)),
+        },
     )

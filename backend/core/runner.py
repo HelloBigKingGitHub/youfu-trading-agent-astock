@@ -10,7 +10,16 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 from backend.core.tracker import AnalysisTracker, get_store
+from backend.core.history_store import get_history_store
 from backend.models.request import AnalyzeRequest
+
+# P2.28 — mirror web/runner.py's results_path layout. The full report
+# file is written by ``graph._log_state()`` under
+# ``~/.tradingagents/logs/{ticker}/TradingAgentsStrategy_logs/full_states_log_{date}.json``;
+# the history entry's ``results_path`` field has to point at that exact
+# path or ``GET /api/analyze/{id}/report`` 404s with "报告文件丢失"
+# even though the file exists on disk.
+_RESULTS_DIR = Path.home() / ".tradingagents" / "logs"
 
 
 def _run_analysis(
@@ -57,22 +66,41 @@ def _run_analysis(
 
     last_chunk: dict = {}
 
-    # Map report keys to stage IDs
+    # Map LangGraph chunk keys to (stage_id, canonical report_key). The
+    # chunk key is what the underlying node emits in the stream; the
+    # canonical key is what we persist under ``stage_reports`` and what
+    # the frontend reads via ``STAGE_TO_REPORT_KEY``. They differ for
+    # stages where the LangGraph field name doesn't match the canonical
+    # name (e.g. quality_gate's ``data_quality_summary`` chunk is
+    # exposed as ``quality_gate_report``).
     stage_map = {
-        "market_report": "market",
-        "sentiment_report": "social",
-        "news_report": "news",
-        "fundamentals_report": "fundamentals",
-        "policy_report": "policy",
-        "hot_money_report": "hot_money",
-        "lockup_report": "lockup",
-        "investment_debate_state": "debate",
-        "trader_investment_plan": "trader",
-        "risk_debate_state": "risk",
-        "final_trade_decision": "pm",
+        "market_report": ("market", "market_report"),
+        "sentiment_report": ("social", "sentiment_report"),
+        "news_report": ("news", "news_report"),
+        "fundamentals_report": ("fundamentals", "fundamentals_report"),
+        "policy_report": ("policy", "policy_report"),
+        "hot_money_report": ("hot_money", "hot_money_report"),
+        "lockup_report": ("lockup", "lockup_report"),
+        # P2.28 — quality_gate node emits ``data_quality_summary``; expose
+        # it under the canonical ``quality_gate_report`` key the frontend
+        # expects. Without this mapping quality_gate never landed in
+        # ``completed_stages`` and the report summary stopped at 11.
+        "data_quality_summary": ("quality_gate", "quality_gate_report"),
+        "investment_debate_state": ("debate", "investment_debate_state"),
+        "trader_investment_plan": ("trader", "trader_investment_plan"),
+        "risk_debate_state": ("risk", "risk_debate_state"),
+        "final_trade_decision": ("pm", "final_trade_decision"),
     }
 
-    stage_order = list(stage_map.values())
+    stage_order = [
+        # P2.26 hotfix — explicit pipeline order. Derived from stage_map
+        # values it lost ``quality_gate`` (no chunk field for it — the gate
+        # fires between lockup and debate), so the auto-chain was skipping
+        # over quality_gate when lockup finished. Mirrors the order in
+        # ``STAGES`` in frontend/src/components/analyze/analysis-progress.tsx.
+        "market", "social", "news", "fundamentals", "policy", "hot_money",
+        "lockup", "quality_gate", "debate", "risk", "trader", "pm",
+    ]
 
     def _activate_next_stage(completed_stage: str) -> None:
         """Activate the next pipeline stage as soon as one completes."""
@@ -101,7 +129,11 @@ def _run_analysis(
     # any chunk that arrives after the ceiling triggers a TimeoutError
     # that we catch and convert to tracker.mark_error(), so the user
     # always sees a definitive error/complete state.
-    MAX_RUN_SEC = 600  # 10 minutes — matches STUCK_THRESHOLD_SEC in history_store.py
+    MAX_RUN_SEC = 1800  # 30 minutes — user feedback: real analyses
+                       # typically take ~20 min (12 stages × LLM calls).
+                       # 10 min was too aggressive and aborted legitimate
+                       # long runs (P2.23 hotfix was a stop-gap at 600s).
+                       # Must match STUCK_THRESHOLD_SEC in history_store.py.
 
     try:
         for chunk in graph.graph.stream(init_state, **args):
@@ -116,28 +148,30 @@ def _run_analysis(
                 )
 
             # Update current stage based on chunk keys
-            for report_key, stage_id in stage_map.items():
-                content = chunk.get(report_key, "")
-                if content and tracker.stage_status(stage_id) != "done":
-                    if tracker.current_stage != stage_id:
-                        tracker.mark_stage_active(stage_id)
-                    tracker.mark_stage_done(
-                        stage_id,
-                        str(content)[:500],
-                        report_key=report_key,
-                    )
-                    _activate_next_stage(stage_id)
-                    # P2.21 hotfix — previously this cleared current_stage to ""
-                    # after every mark_stage_done, which made the React progress
-                    # UI show no current stage during stage transitions (the
-                    # user reported the progress tab was blank for 8+ hours).
-                    # We now KEEP current_stage pointing at the just-finished
-                    # stage until the next stage's chunk arrives and overwrites
-                    # it via the `if tracker.current_stage != stage_id` branch
-                    # above. The frontend (修 4) additionally infers current_stage
-                    # from completed_stages when this is empty for older history
-                    # entries, so we don't need to write "" anymore.
-                    # tracker.mark_stage_active("")  # ← removed in P2.21
+            for chunk_key, (stage_id, canonical_key) in stage_map.items():
+                content = chunk.get(chunk_key, "")
+                if not content or tracker.stage_status(stage_id) == "done":
+                    continue
+                # Dict stages (debate / risk) — only count as done once the
+                # judge node has produced a non-empty decision. The empty
+                # initial state ``{'count': 0, ..., 'judge_decision': ''}``
+                # is otherwise truthy and would fire mark_stage_done on the
+                # first chunk. P2.26 hotfix — re-added after a refactor
+                # dropped the guard, which caused empty-dict stage_reports
+                # to land in the workspace tab.
+                if chunk_key in {"investment_debate_state", "risk_debate_state"}:
+                    if not isinstance(content, dict):
+                        continue
+                    if not content.get("judge_decision"):
+                        continue
+                if tracker.current_stage != stage_id:
+                    tracker.mark_stage_active(stage_id)
+                tracker.mark_stage_done(
+                    stage_id,
+                    str(content)[:500],
+                    report_key=canonical_key,
+                )
+                _activate_next_stage(stage_id)
 
             # Update stats
             s = stats.get_stats()
@@ -150,6 +184,17 @@ def _run_analysis(
 
         graph.ticker = tracker.ticker
         graph._log_state(tracker.trade_date, last_chunk)
+
+        # P2.28 hotfix — point the history entry at the file
+        # ``graph._log_state()`` just wrote. Without this the report
+        # endpoint reads ``entry.results_path`` (empty string) and
+        # 404s with "报告文件丢失 (results_path='')" even though the
+        # file exists on disk. Mirrors web/runner.py:285-289.
+        results_path = str(
+            _RESULTS_DIR / tracker.ticker / "TradingAgentsStrategy_logs"
+            / f"full_states_log_{tracker.trade_date}.json"
+        )
+        get_history_store().set_results_path(tracker.analysis_id, results_path)
     except TimeoutError as e:
         # P2.23 hotfix — hard timeout, mark error so the user sees a
         # definitive failure rather than "running" forever.
@@ -168,6 +213,14 @@ def start_analysis(
     """Start a new analysis in a background thread. Returns (analysis_id, tracker)."""
     store = get_store()
     analysis_id, tracker = store.create(request.ticker, request.trade_date)
+
+    # P2.26 hotfix — flip the first stage to "active" synchronously so the
+    # progress bar lights up before the worker thread is even scheduled.
+    # Without this the very first /progress poll (which can fire ~50ms
+    # after POST returns) would see ``current_stage=""`` and show the
+    # all-pending empty state for the 100-500ms between submit and the
+    # first chunk.
+    tracker.mark_stage_active("market")
 
     from tradingagents.default_config import DEFAULT_CONFIG
 

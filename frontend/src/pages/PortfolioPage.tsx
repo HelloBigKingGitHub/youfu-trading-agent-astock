@@ -216,8 +216,7 @@ export function PortfolioPage() {
               error={positionsQuery.error ? errorString(positionsQuery.error) : null}
             />
             <p className="text-xs text-text-tertiary">
-              共享 <code className="font-mono">backend.core.portfolio_store</code> 单例 ·
-              与 Streamlit <code className="font-mono">web/components/portfolio_overview.py</code> 1:1
+              按当前持仓与最新价实时计算, 持仓变动会自动刷新指标。
             </p>
           </div>
 

@@ -78,7 +78,23 @@ export function AnalysisWorkspace({
     >
       {WORKSPACE_CARDS.map((c) => {
         const body = reports[c.id];
-        const isCurrent = currentStage && currentStage.startsWith(c.id.replace('_report', ''));
+        // P2.26 hotfix — currentStage can be empty between LangGraph chunks
+        // and during the very first poll after POST /api/analyze. Infer the
+        // running card from completed_stages by treating "the next stage
+        // after the last completed one" as active. The 7 WORKSPACE_CARDS
+        // are pipeline-ordered (market → social → news → fundamentals →
+        // policy → hot_money → lockup), so the earliest card without a
+        // body is the next stage the runner is about to produce.
+        const stageId = c.id.replace('_report', '');
+        let isCurrent = Boolean(currentStage && currentStage === stageId);
+        if (!isCurrent && !body) {
+          const emptyStageIds = WORKSPACE_CARDS
+            .map((cc) => cc.id.replace('_report', ''))
+            .filter((id) => !reports[`${id}_report`]);
+          if (emptyStageIds[0] === stageId) {
+            isCurrent = true;
+          }
+        }
         return (
           <Card
             key={c.id}
