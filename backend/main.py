@@ -1,6 +1,7 @@
 """FastAPI backend for TradingAgents-Astock mobile API."""
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,9 +25,28 @@ from backend.api.sector import router as sector_router  # noqa: E402
 from backend.api.portfolio import router as portfolio_router  # noqa: E402
 from backend.api.schedule import router as schedule_router  # noqa: E402
 
-from backend.core.history_store import get_history_store  # noqa: E402
+from backend.core.history_store import HistoryStore, get_history_store  # noqa: E402
+from backend.core.history_store_dualwrite import DualWriteHistoryStore  # noqa: E402
+from backend.core.history_store_sqlite import SQLiteHistoryStore  # noqa: E402
 
 logger = logging.getLogger("backend.main")
+# Uvicorn's default logging config leaves application loggers at WARNING.
+# Keep this lifecycle notice visible at startup without changing root logging.
+logger.setLevel(logging.INFO)
+
+
+def _enable_history_dual_write() -> DualWriteHistoryStore:
+    """Install the Phase 3b wrapper without changing JSON callers."""
+    current = get_history_store()
+    if isinstance(current, DualWriteHistoryStore):
+        return current
+
+    dual_store = DualWriteHistoryStore(current, SQLiteHistoryStore())
+    # ``get_history_store`` delegates to HistoryStore.get_instance(), so the
+    # class singleton—not a module-level attribute—must be replaced here.
+    HistoryStore._instance = dual_store
+    logger.warning("HistoryStore dual-write enabled (JSON + SQLite)")
+    return dual_store
 
 
 @asynccontextmanager
@@ -41,6 +61,8 @@ async def lifespan(_app: FastAPI):
     the UI stays clean. Idempotent — a fresh store has no zombies.
     """
     try:
+        if os.environ.get("DUAL_WRITE_HISTORY", "0") == "1":
+            _enable_history_dual_write()
         store = get_history_store()
         cleaned = store.cleanup_zombies()
         if cleaned:
