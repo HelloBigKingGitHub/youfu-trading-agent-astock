@@ -3,11 +3,25 @@
 JSONL remains the read source of truth.  Each write is attempted against the
 legacy writer and the SQLite sidecar independently; either side may fail
 without aborting the analysis.
+
+Phase 3d additionally grabs a cross-process fcntl.flock on the
+``meta.json`` sibling when ``DUAL_WRITE_LOGS=1`` — fixes DDD_OPERATIONS §6.1
+where two writers could race the read-modify-write of meta.json.  The
+helper lives in :mod:`backend.core.log_store_lock_helper` so we never
+modify :mod:`backend.core.log_store`.
 """
 
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
+from pathlib import Path
+
+from backend.core.log_store_lock_helper import (
+    MetaJsonLockError,
+    is_dual_write_active,
+    meta_json_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +73,58 @@ class DualWriteLogWriter:
         self.trade_date = trade_date
         self.task_dir_name = getattr(json_writer, "task_dir_name", "")
 
+    # ── helpers ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _meta_path_for(json_writer) -> Path | None:
+        """Resolve the legacy ``meta.json`` path, if available."""
+        if json_writer is None:
+            return None
+        getter = getattr(json_writer, "_meta_path", None)
+        if getter is None:
+            return None
+        try:
+            return Path(getter())
+        except Exception:
+            return None
+
+    def _with_meta_lock(self, fn, *args, **kwargs):
+        """Run ``fn`` while holding the meta.json fcntl lock (dual-write only).
+
+        Phase 3d fix for DDD_OPERATIONS §6.1 — the legacy
+        ``_write_meta_field`` is a non-atomic read-modify-write.  Under
+        ``DUAL_WRITE_LOGS=1`` we serialize every call to ``update_stages``
+        and ``finalize`` through a sibling ``meta.lock`` so two processes
+        can't clobber each other's fields.
+        """
+        if not is_dual_write_active():
+            return fn(*args, **kwargs)
+        meta_path = self._meta_path_for(self._json)
+        if meta_path is None:
+            # No path resolved → fall back to the legacy writer's own
+            # internal locking, which is what the JSON writer has always
+            # done for append_chunk.
+            return fn(*args, **kwargs)
+        try:
+            with meta_json_lock(meta_path, timeout_sec=5.0, blocking=True):
+                return fn(*args, **kwargs)
+        except MetaJsonLockError as exc:
+            # Lock not acquired — log and continue.  The legacy writer is
+            # already in use elsewhere; falling through here just means
+            # the second writer's update may race.  That's no worse than
+            # the pre-Phase 3d behaviour.
+            logger.warning(
+                "Phase 3d §6.1 meta.json lock unavailable for %s — proceeding unlocked: %s",
+                meta_path, exc,
+            )
+            return fn(*args, **kwargs)
+
+    # ── write API ────────────────────────────────────────────────────────
+
     def append_chunk(self, chunk) -> None:
+        # append_chunk writes a JSONL append (already flock-protected inside
+        # the legacy writer) plus a periodic meta update.  We only need to
+        # gate the meta update path; the append itself is safe.
         try:
             self._json.append_chunk(chunk)
         except Exception as exc:
@@ -70,20 +135,20 @@ class DualWriteLogWriter:
             logger.warning("SQLite append_chunk failed (non-fatal): %s", exc)
 
     def update_stages(self, stages: list[str]) -> None:
-        try:
+        def _do() -> None:
             self._json.update_stages(stages)
-        except Exception as exc:
-            logger.warning("JSON update_stages failed: %s", exc)
+        with suppress(Exception):
+            self._with_meta_lock(_do)
         try:
             self._sqlite.update_stages(stages)
         except Exception as exc:
             logger.warning("SQLite update_stages failed (non-fatal): %s", exc)
 
     def finalize(self, **kwargs) -> None:
-        try:
+        def _do() -> None:
             self._json.finalize(**kwargs)
-        except Exception as exc:
-            logger.warning("JSON finalize failed: %s", exc)
+        with suppress(Exception):
+            self._with_meta_lock(_do)
         try:
             self._sqlite.finalize(**kwargs)
         except Exception as exc:

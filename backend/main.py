@@ -85,6 +85,24 @@ async def lifespan(_app: FastAPI):
             )
         else:
             logger.info("P2.14 startup: no zombie analyses to clean")
+        # Phase 3d — TTL auto-cleanup. Opt-in via SQLITE_AUTO_CLEANUP=1 so
+        # cron-less prod deploys can still bound the DB.  Always
+        # non-fatal: a failure here must never block uvicorn startup.
+        if os.environ.get("SQLITE_AUTO_CLEANUP", "0") == "1":
+            try:
+                from backend.core.sqlite_cleanup import cleaner_from_env
+
+                _auto_cleaner = cleaner_from_env()
+                _auto_stats = _auto_cleaner.cleanup_all()
+                _auto_cleaner.close()
+                logger.warning(
+                    "SQLite auto-cleanup: deleted %d history + %d log_chunks, freed %d bytes",
+                    _auto_stats.history_deleted,
+                    _auto_stats.log_chunks_deleted,
+                    _auto_stats.bytes_freed,
+                )
+            except Exception as _auto_exc:  # pragma: no cover — never block startup
+                logger.warning("SQLite auto-cleanup failed (non-fatal): %s", _auto_exc)
     except Exception as exc:  # pragma: no cover — never block startup
         logger.exception("P2.14 zombie cleanup failed (non-fatal): %s", exc)
     yield
