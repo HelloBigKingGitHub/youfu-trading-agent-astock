@@ -28,6 +28,10 @@ from backend.api.schedule import router as schedule_router  # noqa: E402
 from backend.core.history_store import HistoryStore, get_history_store  # noqa: E402
 from backend.core.history_store_dualwrite import DualWriteHistoryStore  # noqa: E402
 from backend.core.history_store_sqlite import SQLiteHistoryStore  # noqa: E402
+from backend.core.log_store_dualwrite_runtime import (  # noqa: E402
+    DualWriteLogRuntime,
+    enable_log_dual_write,
+)
 
 logger = logging.getLogger("backend.main")
 # Uvicorn's default logging config leaves application loggers at WARNING.
@@ -49,6 +53,11 @@ def _enable_history_dual_write() -> DualWriteHistoryStore:
     return dual_store
 
 
+def _enable_log_dual_write() -> DualWriteLogRuntime:
+    """Install the Phase 3c JSONL + SQLite log wrapper."""
+    return enable_log_dual_write()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """FastAPI lifespan: cleanup zombie analyses on startup.
@@ -60,7 +69,10 @@ async def lifespan(_app: FastAPI):
     stuck entry. On every startup we sweep these and mark them error so
     the UI stays clean. Idempotent — a fresh store has no zombies.
     """
+    log_runtime: DualWriteLogRuntime | None = None
     try:
+        if os.environ.get("DUAL_WRITE_LOGS", "0") == "1":
+            log_runtime = _enable_log_dual_write()
         if os.environ.get("DUAL_WRITE_HISTORY", "0") == "1":
             _enable_history_dual_write()
         store = get_history_store()
@@ -76,6 +88,8 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:  # pragma: no cover — never block startup
         logger.exception("P2.14 zombie cleanup failed (non-fatal): %s", exc)
     yield
+    if log_runtime is not None:
+        log_runtime.close()
 
 
 app = FastAPI(
