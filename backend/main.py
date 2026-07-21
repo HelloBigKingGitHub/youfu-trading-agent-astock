@@ -32,6 +32,10 @@ from backend.core.log_store_dualwrite_runtime import (  # noqa: E402
     DualWriteLogRuntime,
     enable_log_dual_write,
 )
+from backend.core.read_routing import (  # noqa: E402
+    ReadRoutingRuntime,
+    enable_read_routing,
+)
 
 logger = logging.getLogger("backend.main")
 # Uvicorn's default logging config leaves application loggers at WARNING.
@@ -58,6 +62,11 @@ def _enable_log_dual_write() -> DualWriteLogRuntime:
     return enable_log_dual_write()
 
 
+def _enable_read_routing() -> ReadRoutingRuntime:
+    """Phase 4: route reads to the SQLite sidecar; writes stay JSON/JSONL."""
+    return enable_read_routing()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """FastAPI lifespan: cleanup zombie analyses on startup.
@@ -70,11 +79,17 @@ async def lifespan(_app: FastAPI):
     the UI stays clean. Idempotent — a fresh store has no zombies.
     """
     log_runtime: DualWriteLogRuntime | None = None
+    read_runtime: ReadRoutingRuntime | None = None
     try:
         if os.environ.get("DUAL_WRITE_LOGS", "0") == "1":
             log_runtime = _enable_log_dual_write()
         if os.environ.get("DUAL_WRITE_HISTORY", "0") == "1":
             _enable_history_dual_write()
+        # Phase 4 — flip reads to SQLite.  Defaults to off so a uvicorn
+        # restart does not silently change behaviour.  Dual-write flags
+        # above are honoured: writes keep landing on JSON/JSONL+SQLite.
+        if os.environ.get("READ_FROM_SQLITE", "0") == "1":
+            read_runtime = _enable_read_routing()
         store = get_history_store()
         cleaned = store.cleanup_zombies()
         if cleaned:
@@ -108,6 +123,8 @@ async def lifespan(_app: FastAPI):
     yield
     if log_runtime is not None:
         log_runtime.close()
+    if read_runtime is not None:
+        read_runtime.close()
 
 
 app = FastAPI(
