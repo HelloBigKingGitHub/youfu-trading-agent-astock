@@ -568,13 +568,19 @@ class TestPurgeEdgeCases:
         finally:
             monkeypatch.undo()
 
-    def test_tracker_with_no_running_history_still_blocks_purge(
+    def test_purge_auto_sweeps_zombie_tracker_with_terminal_metadata(
         self, client, purge_env,
     ):
-        """Defensive: a tracker is alive with is_running=True but its
-        history entry was already mark_error'd (e.g. crash mid-finalize).
-        The tracker scan must still add the id to the active set so the
-        dedup branch at ``_assert_no_active_analyses:169`` is exercised.
+        """Defensive: a tracker stays ``is_running=True`` in memory but
+        the persisted history metadata has already been finalized
+        (e.g. ``mark_error`` succeeded before a crash left the tracker
+        entry stale). The purge service MUST sweep such stale trackers
+        before checking the active set — otherwise the destructive
+        action is permanently blocked by a zombie whose thread is gone.
+
+        P2.32 hotfix — the prior "always block" behavior left users
+        unable to clear history when an analysis crashed mid-finalize,
+        because the in-memory tracker never got cleaned up.
         """
         from backend.core import tracker as tracker_mod
         from backend.core.history_store import get_history_store
@@ -583,8 +589,72 @@ class TestPurgeEdgeCases:
             ticker="600595", trade_date="2026-07-18",
         )
         # Tracker stays running. Flip history status to "error" so the
-        # history scan skips it, forcing the tracker scan to add the id.
+        # tracker is now "stale" (no live thread, no live history entry
+        # in active status) — exactly the user-reported bug.
         get_history_store().mark_error(analysis_id, error="prior crash")
+
+        # Add a terminal sibling so we can prove the wipe still happens.
+        get_history_store().create(
+            "000001", "2026-07-18", status="completed", analysis_id="rid-completed",
+        )
+
+        r = client.post(
+            "/api/history/purge",
+            json={"confirmation": "CLEAR_ALL_HISTORY", "include_cache": False},
+        )
+        assert r.status_code == 200, r.text
+
+        # The zombie tracker was swept — is_running flipped. The history
+        # entry was wiped by the metadata sweep (it had status=error, so
+        # it qualified for deletion).
+        tracker_store = tracker_mod.TrackerStore.get_instance()
+        assert tracker_store.get(analysis_id) is not None
+        assert tracker_store.get(analysis_id).is_running is False
+        assert get_history_store().get(analysis_id) is None
+        assert get_history_store().get("rid-completed") is None
+
+    def test_purge_auto_sweeps_zombie_tracker_with_no_metadata(
+        self, client, purge_env,
+    ):
+        """Orphan tracker — the entry has ``is_running=True`` but no
+        persisted history.json at all (e.g. tracker created in memory
+        after the metadata write raced with a crash). Sweep must drop
+        the tracker so purge can complete.
+        """
+        from backend.core import tracker as tracker_mod
+        from backend.core.tracker import AnalysisTracker
+        import uuid
+
+        tracker_store = tracker_mod.TrackerStore.get_instance()
+        analysis_id = f"600519_2026-07-18_{uuid.uuid4().hex[:8]}"
+        orphan = AnalysisTracker(
+            analysis_id=analysis_id, ticker="600519", trade_date="2026-07-18",
+            is_running=True,
+        )
+        with tracker_store._store_lock:
+            tracker_store._trackers[analysis_id] = orphan
+
+        r = client.post(
+            "/api/history/purge",
+            json={"confirmation": "CLEAR_ALL_HISTORY", "include_cache": False},
+        )
+        assert r.status_code == 200, r.text
+        assert tracker_store.get(analysis_id) is None, (
+            "orphan tracker should have been swept from memory"
+        )
+
+    def test_purge_blocks_when_tracker_and_metadata_both_active(
+        self, client, purge_env,
+    ):
+        """Legitimate live analysis — tracker is_running=True AND metadata
+        status=running. Sweep MUST NOT touch it; purge returns 409.
+        """
+        from backend.core import tracker as tracker_mod
+
+        analysis_id, _ = tracker_mod.TrackerStore.get_instance().create(
+            ticker="600595", trade_date="2026-07-18",
+        )
+        # TrackerStore.create already wrote metadata status=running.
 
         r = client.post(
             "/api/history/purge",
@@ -594,6 +664,11 @@ class TestPurgeEdgeCases:
         body = r.json()
         assert body["detail"]["reason"] == "active_analyses"
         assert analysis_id in body["detail"]["active_ids"]
+        # Tracker must still be running (sweep did NOT touch a live entry).
+        assert (
+            tracker_mod.TrackerStore.get_instance().get(analysis_id).is_running
+            is True
+        )
 
     def test_unlink_failure_increments_failed_items(self, client, purge_env):
         """When ``Path.unlink`` raises OSError the entry is counted in
