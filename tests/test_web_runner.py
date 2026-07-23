@@ -40,7 +40,12 @@ def runner_harness(monkeypatch):
 
     history_store = MagicMock()
     history_store.create.return_value = SimpleNamespace(analysis_id="analysis-123")
-    monkeypatch.setattr(runner, "_history_store", history_store)
+    # P2.33 hotfix — `_history_store` is now a lazy function (P2.32 hotfix),
+    # not a module-level instance. Patch the underlying factory
+    # `get_history_store` so the lazy call returns the mock. Patching
+    # `_history_store` itself (the old pattern) would replace the function
+    # with a MagicMock instance, breaking the `runner._history_store()` call.
+    monkeypatch.setattr(runner, "get_history_store", lambda: history_store)
     monkeypatch.setattr(runner, "_run", MagicMock())
     return runner, history_store
 
