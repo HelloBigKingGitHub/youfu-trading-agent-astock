@@ -87,8 +87,16 @@ async def lifespan(_app: FastAPI):
             _enable_history_dual_write()
         # Phase 4 — flip reads to SQLite.  Defaults to off so a uvicorn
         # restart does not silently change behaviour.  Dual-write flags
-        # above are honoured: writes keep landing on JSON/JSONL+SQLite.
+        # P2.32 hotfix — READ_FROM_SQLITE=1 must also enable writes to SQLite,
+        # otherwise new analyses only land in JSON/JSONL and the read-side
+        # SQLite-sidecar returns [] — the user sees an empty history while
+        # the JSON files still exist. Force dual-write flags on when reads
+        # are routed, so the SQLite sidecar stays consistent with disk.
         if os.environ.get("READ_FROM_SQLITE", "0") == "1":
+            os.environ.setdefault("DUAL_WRITE_HISTORY", "1")
+            os.environ.setdefault("DUAL_WRITE_LOGS", "1")
+            _enable_history_dual_write()
+            log_runtime = _enable_log_dual_write()
             read_runtime = _enable_read_routing()
         store = get_history_store()
         cleaned = store.cleanup_zombies()

@@ -19,7 +19,14 @@ from web.progress import PIPELINE_STAGES, ProgressTracker
 
 logger = logging.getLogger(__name__)
 
-_history_store = get_history_store()
+# P2.32 hotfix — call get_history_store() lazily on every access.
+# Previously the module captured a reference at import time, which
+# locked in the *initial* HistoryStore singleton before lifespan
+# could swap it for DualWriteHistoryStore (Phase 3b) — new analyses
+# only wrote JSON, the SQLite sidecar stayed empty, and READ_FROM_SQLITE=1
+# read 0 rows.
+def _history_store():
+    return get_history_store()
 _RESULTS_DIR = Path.home() / ".tradingagents" / "logs"
 
 
@@ -257,7 +264,8 @@ def run_one_analysis(ticker: str, trade_date: str, config: dict) -> str:
     scheduler route through here so they also write a history entry.
     """
     started_at = time.time()
-    entry = _history_store.create(ticker, trade_date, status="running")
+    hs = _history_store()
+    entry = hs.create(ticker, trade_date, status="running")
     analysis_id = entry.analysis_id
     tracker = ProgressTracker(
         analysis_id=analysis_id,
@@ -271,12 +279,14 @@ def run_one_analysis(ticker: str, trade_date: str, config: dict) -> str:
         _run(ticker, trade_date, config, tracker, analysis_id)
     except Exception as exc:
         tracker.mark_error(str(exc))
-        _history_store.mark_error(analysis_id, str(exc),
-                                  elapsed=time.time() - started_at)
+        hs = _history_store()
+        hs.mark_error(analysis_id, str(exc),
+                      elapsed=time.time() - started_at)
         raise
 
     elapsed = time.time() - started_at
-    _history_store.mark_complete(
+    hs = _history_store()
+    hs.mark_complete(
         analysis_id,
         signal=tracker.signal or "",
         elapsed=elapsed,
@@ -286,7 +296,7 @@ def run_one_analysis(ticker: str, trade_date: str, config: dict) -> str:
         _RESULTS_DIR / ticker / "TradingAgentsStrategy_logs"
         / f"full_states_log_{trade_date}.json"
     )
-    _history_store.set_results_path(analysis_id, results_path)
+    hs.set_results_path(analysis_id, results_path)
     return analysis_id
 
 
