@@ -205,7 +205,7 @@ def delete_history(analysis_id: str) -> dict:
     return {"ok": True, "analysis_id": analysis_id}
 
 
-# ── re-run (P2.34) ──────────────────────────────────────────────────────────
+# ── re-run (P2.34 + P2.35) ──────────────────────────────────────────────────
 #
 # P2.34 hotfix — atomic rerun (§6.9 of DDD_OPERATIONS.md).
 #
@@ -215,40 +215,41 @@ def delete_history(analysis_id: str) -> dict:
 # pile up pending analyses; an in-flight worker could write to the
 # deleted entry's analysis_id.
 #
-# The fix lives in :mod:`backend.core.rerun_helper` and is invoked here.
+# P2.35 hotfix — actually start the analysis. P2.34 only created the new
+# history entry; the worker thread was never spawned, so the user saw
+# ``status=pending`` forever. The chain now lives in
+# :func:`backend.core.rerun_helper.rerun_and_start` which:
+#   * delegates the atomic delete + create to ``rerun_analysis`` (P2.34
+#     invariant — status guard, debounce, lock-held critical section)
+#   * calls ``backend.core.start_analysis`` so a worker thread actually
+#     picks up the new analysis and the frontend's progress polls have
+#     something to render
+#   * cleans up the helper-created stub to avoid a duplicate history
+#     entry (``start_analysis`` writes its own keyed by the uuid id)
+#
 # This endpoint:
-#   * delegates the delete + create pair to ``rerun_analysis`` which holds
-#     ``HistoryStore.exclusive_access()`` for the whole critical section
-#   * returns the NEW ``analysis_id`` of the freshly created entry (the
-#     start_analysis half — actually kicking off the worker — is
-#     tracked as P2.35 and intentionally out of scope for P2.34)
-#   * maps the helper's ``ValueError`` to HTTP 409 — covers the debounce
-#     rejection, the not-found case (we still surface 404), and the
-#     "wrong status" rejection in one branch
+#   * maps ``ValueError`` to HTTP 409 — debounce rejection, wrong status,
+#     or 404 case
+#   * maps ``RuntimeError`` to HTTP 500 — atomic create failure (the
+#     helper left the old entry intact, so a retry will succeed once
+#     the underlying problem is fixed)
+#   * propagates any exception raised by ``start_analysis`` as HTTP 500
+#     (the helper stub is left in pending state so the user can retry)
 @router.post("/api/history/{analysis_id}/rerun")
 def rerun_history(analysis_id: str) -> dict:
-    """Atomically rerun a completed/errored analysis (P2.34).
+    """Atomically rerun a completed/errored analysis AND start it (P2.34+P2.35).
 
-    Returns ``{ok, analysis_id, ticker, trade_date, start_analysis}`` so
-    the frontend can both display the new id AND forward the
-    ``start_analysis`` payload to ``POST /api/analyze`` in the
-    follow-up P2.35 work.
+    Returns ``{ok, analysis_id, ticker, trade_date, start_analysis}``
+    where ``analysis_id`` is the live id returned by ``start_analysis``
+    (a fresh uuid-based id, not the helper-created ``_r<ts>_<hex>``
+    stub). The frontend uses ``start_analysis.ticker`` /
+    ``start_analysis.trade_date`` for the success toast and polls
+    ``/api/analyze/{analysis_id}/progress`` to follow the run.
     """
-    from backend.core.rerun_helper import rerun_analysis
-
-    # Read first so we can include ticker/trade_date in the success
-    # payload AND so we can distinguish 404 (no such entry) from 409
-    # (everything else: debounce, running status, internal error).
-    store = get_history_store()
-    pre_entry = store.get(analysis_id)
-    if pre_entry is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"history entry {analysis_id!r} not found",
-        )
+    from backend.core.rerun_helper import rerun_and_start
 
     try:
-        new_id = rerun_analysis(analysis_id)
+        result = rerun_and_start(analysis_id)
     except ValueError as exc:
         # 409 covers both the debounce window and the "status is
         # pending/running" rejection. The detail string carries the
@@ -256,36 +257,23 @@ def rerun_history(analysis_id: str) -> dict:
         # the message text.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
-        # 500: we managed to find the entry, validate the status,
-        # but failed to create the new one. Disk full / permissions
-        # / etc. The old entry is left intact by the helper so a
-        # retry from the user will succeed once the underlying
-        # problem is fixed.
+        # 500: the helper stub could not be created (disk full /
+        # permissions / etc). The old entry is left intact by the
+        # helper so a retry from the user will succeed once the
+        # underlying problem is fixed.
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    # Re-read the newly-created entry so we can return its
-    # ticker/trade_date with the response. The helper just created
-    # it, so this is one cheap in-process JSON read.
-    new_entry = store.get(new_id)
-    if new_entry is None:
-        # Should not happen — the helper just created it. Defensive
-        # only; we keep the response informative.
+    except Exception as exc:
+        # 500: start_analysis raised (e.g. ticker format check
+        # failed, OpenAI key missing). The helper stub is still
+        # in pending state on disk so the user can retry once the
+        # underlying problem is fixed. The 60s debounce stays in
+        # effect to avoid piling up identical reruns.
         raise HTTPException(
             status_code=500,
-            detail=f"new entry {new_id!r} vanished immediately after creation",
-        )
+            detail=f"start_analysis raised: {exc}",
+        ) from exc
 
-    payload = {
-        "ticker": new_entry.ticker,
-        "trade_date": new_entry.trade_date,
-    }
-    return {
-        "ok": True,
-        "analysis_id": new_id,
-        "ticker": new_entry.ticker,
-        "trade_date": new_entry.trade_date,
-        "start_analysis": payload,
-    }
+    return result
 
 
 # ── report ──────────────────────────────────────────────────────────────────

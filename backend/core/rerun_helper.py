@@ -209,3 +209,168 @@ def reset_debounce() -> None:
     cases so one test cannot leak a 60s wait into the next.
     """
     _recent_reruns.clear()
+
+
+# ── P2.35 hotfix: rerun + actually start ─────────────────────────────────────
+#
+# P2.34 closed the atomicity half (delete + create race) but the endpoint
+# only created a new history entry — it never spawned the worker, so the
+# user saw ``status=pending`` forever. P2.35 completes §6.9 by chaining
+# ``start_analysis`` onto the helper so a rerun behaves like a fresh
+# POST /api/analyze for the same ticker/date.
+#
+# Design contract (preserved from P2.34):
+#
+# * ``rerun_analysis`` stays as-is. It owns the atomicity, status guard,
+#   and debounce. This function layers the actual start on top.
+# * ``start_analysis`` is **not** modified. We import it lazily inside
+#   ``rerun_and_start`` so a test environment that never hits the
+#   endpoint does not pay the cost of ``web/runner.py`` /
+#   ``tradingagents.default_config`` loading.
+# * The returned ``analysis_id`` is the one ``start_analysis`` produces —
+#   a fresh uuid-based id of the form ``{ticker}_{date}_{hex}``. The
+#   helper-created ``_r<ts>_<hex>`` stub is deleted after
+#   ``start_analysis`` succeeds because it would otherwise be a
+#   duplicate orphan (start_analysis writes its own history entry).
+#
+# Failure mode contract:
+#
+# * If ``rerun_analysis`` raises (debounce / 404 / 409 / 500),
+#   ``rerun_and_start`` propagates without calling ``start_analysis``.
+# * If ``start_analysis`` raises after ``rerun_analysis`` succeeded,
+#   the ``_r<ts>_<hex>`` stub is left in ``pending`` state so the user
+#   can retry; the 60s debounce remains in effect to avoid piling up
+#   identical reruns while the underlying problem is fixed.
+def rerun_and_start(
+    analysis_id: str,
+    config: dict | None = None,
+    *,
+    debounce_sec: float = RERUN_DEBOUNCE_SEC,
+    now: float | None = None,
+) -> dict:
+    """P2.35 hotfix — atomic rerun + actually start the new analysis.
+
+    Parameters
+    ----------
+    analysis_id
+        Existing history entry to rerun.
+    config
+        Optional ``DEFAULT_CONFIG`` overrides forwarded to
+        ``start_analysis``. Tests pass a stub; production typically
+        passes ``None`` so ``start_analysis`` reads
+        ``tradingagents.default_config.DEFAULT_CONFIG``.
+    debounce_sec
+        Forwarded to :func:`rerun_analysis`. Tests use a small value
+        to keep the suite fast.
+    now
+        Forwarded to :func:`rerun_analysis` for wall-clock injection.
+
+    Returns
+    -------
+    dict
+        ``{ok, analysis_id, ticker, trade_date, start_analysis}``
+        where ``analysis_id`` is the live id returned by
+        ``start_analysis`` and ``start_analysis`` echoes the
+        ticker/trade_date pair so the React Query client can show
+        a toast without an extra history fetch.
+
+    Raises
+    ------
+    ValueError
+        404 / 409 from :func:`rerun_analysis` (not found, wrong
+        status, debounce window). Caller maps to HTTPException.
+    RuntimeError
+        500 — atomic create of the helper stub failed.
+    Exception
+        Anything raised by :func:`start_analysis` (e.g. ticker
+        format validation, OpenAI key missing, …). The helper
+        stub remains in ``pending`` for retry.
+    """
+    # Step 1 — P2.34 atomic delete-old + create-stub + debounce.
+    stub_id = rerun_analysis(
+        analysis_id,
+        debounce_sec=debounce_sec,
+        now=now,
+    )
+
+    # Step 2 — read the helper-created stub for its ticker/trade_date.
+    store = get_history_store()
+    stub_entry = store.get(stub_id)
+    if stub_entry is None:
+        # Defensive: should not happen because rerun_analysis just
+        # created it. If it did, the old entry is gone and there is
+        # no new one either — surface as 500.
+        raise RuntimeError(
+            f"rerun_and_start: helper-created stub {stub_id!r} vanished "
+            f"immediately after rerun_analysis()"
+        )
+
+    # Step 3 — actually start the analysis. start_analysis(request)
+    # creates its own history entry (uuid-based) and a tracker,
+    # then spawns the worker thread. We pass the ticker/date from
+    # the helper-created stub because it inherits those from the
+    # old entry. Config overrides flow through if provided.
+    from backend.core import start_analysis as _start_analysis
+    from backend.models.request import AnalyzeRequest
+
+    llm_overrides = (config or {}).get("llm_overrides") or {}
+
+    request = AnalyzeRequest(
+        ticker=stub_entry.ticker,
+        trade_date=stub_entry.trade_date,
+        llm_provider=llm_overrides.get("llm_provider", "minimax"),
+        quick_think_llm=llm_overrides.get(
+            "quick_think_llm", "MiniMax-M2.7-highspeed",
+        ),
+        deep_think_llm=llm_overrides.get("deep_think_llm", "MiniMax-M2.7"),
+        backend_url=llm_overrides.get("backend_url"),
+    )
+
+    try:
+        live_id, _tracker = _start_analysis(request)
+    except Exception:
+        # start_analysis raised before/after creating its entry.
+        # Either way, the helper stub is still in pending state and
+        # the user gets a retryable error. We log so an operator
+        # can correlate the two halves.
+        logger.warning(
+            "rerun_and_start: start_analysis raised for %s "
+            "(stub %s left in pending for retry)",
+            analysis_id, stub_id,
+            exc_info=True,
+        )
+        raise
+
+    # Step 4 — clean up the helper-created stub. start_analysis
+    # wrote its own history entry keyed by ``live_id``; the stub
+    # is now redundant and would show up as an orphan in the
+    # history list. Best-effort delete — a leftover stub is much
+    # less harmful than a rollback that could orphan the live one.
+    try:
+        store.delete(stub_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning(
+            "rerun_and_start: failed to delete helper stub %s "
+            "(live entry %s already running): %s",
+            stub_id, live_id, exc,
+        )
+
+    logger.warning(
+        "rerun_and_start: %s -> %s (ticker=%s, trade_date=%s) "
+        "[stub=%s, debounce_sec=%.1f]",
+        analysis_id, live_id,
+        stub_entry.ticker, stub_entry.trade_date,
+        stub_id, debounce_sec,
+    )
+
+    payload = {
+        "ticker": stub_entry.ticker,
+        "trade_date": stub_entry.trade_date,
+    }
+    return {
+        "ok": True,
+        "analysis_id": live_id,
+        "ticker": stub_entry.ticker,
+        "trade_date": stub_entry.trade_date,
+        "start_analysis": payload,
+    }
