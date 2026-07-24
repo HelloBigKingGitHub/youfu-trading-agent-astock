@@ -205,27 +205,87 @@ def delete_history(analysis_id: str) -> dict:
     return {"ok": True, "analysis_id": analysis_id}
 
 
-# ── re-run ──────────────────────────────────────────────────────────────────
+# ── re-run (P2.34) ──────────────────────────────────────────────────────────
+#
+# P2.34 hotfix — atomic rerun (§6.9 of DDD_OPERATIONS.md).
+#
+# The previous implementation did ``store.get()`` → ``store.delete()`` with
+# no lock, no status check, and no debounce. Two concurrent clicks could
+# race past the check and both create a new analysis; a spam client could
+# pile up pending analyses; an in-flight worker could write to the
+# deleted entry's analysis_id.
+#
+# The fix lives in :mod:`backend.core.rerun_helper` and is invoked here.
+# This endpoint:
+#   * delegates the delete + create pair to ``rerun_analysis`` which holds
+#     ``HistoryStore.exclusive_access()`` for the whole critical section
+#   * returns the NEW ``analysis_id`` of the freshly created entry (the
+#     start_analysis half — actually kicking off the worker — is
+#     tracked as P2.35 and intentionally out of scope for P2.34)
+#   * maps the helper's ``ValueError`` to HTTP 409 — covers the debounce
+#     rejection, the not-found case (we still surface 404), and the
+#     "wrong status" rejection in one branch
 @router.post("/api/history/{analysis_id}/rerun")
 def rerun_history(analysis_id: str) -> dict:
-    """Mark an entry for re-analysis.
+    """Atomically rerun a completed/errored analysis (P2.34).
 
-    Mirrors streamlit: deletes the old entry and returns a payload the
-    frontend (or the legacy analyze page) can use to start a fresh run.
-    The actual analysis is initiated by the existing analyze endpoint;
-    this route is the "delete + intent" half, kept tiny on purpose so the
-    store stays the single source of truth.
+    Returns ``{ok, analysis_id, ticker, trade_date, start_analysis}`` so
+    the frontend can both display the new id AND forward the
+    ``start_analysis`` payload to ``POST /api/analyze`` in the
+    follow-up P2.35 work.
     """
+    from backend.core.rerun_helper import rerun_analysis
+
+    # Read first so we can include ticker/trade_date in the success
+    # payload AND so we can distinguish 404 (no such entry) from 409
+    # (everything else: debounce, running status, internal error).
     store = get_history_store()
-    entry = store.get(analysis_id)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"history entry {analysis_id!r} not found")
+    pre_entry = store.get(analysis_id)
+    if pre_entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"history entry {analysis_id!r} not found",
+        )
+
+    try:
+        new_id = rerun_analysis(analysis_id)
+    except ValueError as exc:
+        # 409 covers both the debounce window and the "status is
+        # pending/running" rejection. The detail string carries the
+        # specific reason so the React Query client can branch on
+        # the message text.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # 500: we managed to find the entry, validate the status,
+        # but failed to create the new one. Disk full / permissions
+        # / etc. The old entry is left intact by the helper so a
+        # retry from the user will succeed once the underlying
+        # problem is fixed.
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Re-read the newly-created entry so we can return its
+    # ticker/trade_date with the response. The helper just created
+    # it, so this is one cheap in-process JSON read.
+    new_entry = store.get(new_id)
+    if new_entry is None:
+        # Should not happen — the helper just created it. Defensive
+        # only; we keep the response informative.
+        raise HTTPException(
+            status_code=500,
+            detail=f"new entry {new_id!r} vanished immediately after creation",
+        )
+
     payload = {
-        "ticker": entry.ticker,
-        "trade_date": entry.trade_date,
+        "ticker": new_entry.ticker,
+        "trade_date": new_entry.trade_date,
     }
-    store.delete(analysis_id)
-    return {"ok": True, "start_analysis": payload, "analysis_id": analysis_id}
+    return {
+        "ok": True,
+        "analysis_id": new_id,
+        "ticker": new_entry.ticker,
+        "trade_date": new_entry.trade_date,
+        "start_analysis": payload,
+    }
 
 
 # ── report ──────────────────────────────────────────────────────────────────
